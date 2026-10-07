@@ -28,6 +28,18 @@
 
 제조사가 쓰는 85°, 82° 같은 숫자는 사진 대각선 화각이라 동영상 가로 화각보다 12~13° 큽니다.
 
+![기종별 1x 화각](img/fov_phones.png)
+
+### 폰 한 대가 보는 범위
+
+1x는 코너에서 코트의 90~92%를 담고, 카메라 쪽 옆 사이드라인 근처는 못 봅니다(반대편 폰이 담당). 0.5x는 한 대로 코트 100%를 담습니다.
+
+![폰 한 대가 보는 범위](img/fov_reach.png)
+
+### 렌즈별 두 대 배치 비교
+
+![1x와 0.5x 비교](img/fov_lens_compare.png)
+
 ## 결과 1: 두 대를 어디에 둘까 (1x)
 
 코트 둘레 위치(2m 간격)와 방향(4° 간격)을 모두 조합해서 계산했습니다(`python -m futsal.sim search`).
@@ -80,6 +92,7 @@
 
 ```bash
 python -m futsal.sim figures --court 40x20 --twist 5 --out docs/img
+python -m futsal.sim fov --court 40x20 --twist 5 --out docs/img       # 화각 그림 3장
 python -m futsal.sim coverage --court 38x18 --twist 5 --hfov 67.3
 python -m futsal.sim twist --court 42x25
 python -m futsal.sim search --court 40x20 --hfov 67.3

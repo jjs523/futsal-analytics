@@ -1,6 +1,7 @@
 """python -m futsal.sim <command> ...
 
   figures   --court 40x20 --twist 5 --out docs/img      spec drawing, coverage map, synthetic demo
+  fov       --court 40x20 --twist 5 --out docs/img      phone FOV chart, single-phone reach, 1x vs 0.5x
   coverage  --court 40x20 --twist 5 --hfov 67.3         coverage / accuracy numbers for one layout
   twist     --court 42x25                               largest blind-free twist + where the other phone appears
   search    --court 40x20 --hfov 67.3                   brute-force best two-phone placement
@@ -20,7 +21,7 @@ from . import coverage, layout, observe, scenario
 
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="python -m futsal.sim", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("command", choices=["figures", "coverage", "twist", "search", "accuracy", "tracks"])
+    ap.add_argument("command", choices=["figures", "fov", "coverage", "twist", "search", "accuracy", "tracks"])
     ap.add_argument("--court", default="40x20")
     ap.add_argument("--twist", type=float, default=5.0)
     ap.add_argument("--hfov", type=float, default=layout.HFOV_NARROW)
@@ -34,6 +35,10 @@ def main(argv=None):
         from .figures import all_figures
         all_figures(court, a.twist, a.out)
         print(f"wrote {a.out}/court_spec.png, coverage.png, demo.png")
+    elif a.command == "fov":
+        from .fov_figures import all_fov_figures
+        all_fov_figures(court, a.out, a.twist)
+        print(f"wrote {a.out}/fov_phones.png, fov_reach.png, fov_lens_compare.png")
     elif a.command == "coverage":
         s = coverage.analyse(court, layout.diagonal(court, a.twist), a.hfov).summary()
         print(json.dumps({k: round(v, 3) for k, v in s.items()}, indent=1))
