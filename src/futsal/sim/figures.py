@@ -78,26 +78,31 @@ def spec_figure(court: Court, layout: Layout, out: str):
     fig.tight_layout(); fig.savefig(out, dpi=110); plt.close(fig)
 
 
-def coverage_figure(court: Court, layout: Layout, out: str, fovs=((HFOV_NARROW, "화각 좁은 폰 (26mm, 아이폰 기본형)"), (HFOV_WIDE, "화각 넓은 폰 (23mm, 갤럭시 S26·Flip7)"))):
+def coverage_figure(court: Court, layout: Layout, out: str, fovs=((HFOV_NARROW, "화각 좁은 폰 (26mm, 아이폰 기본형)"), (HFOV_WIDE, "화각 넓은 폰 (23mm, 갤럭시 S26·Flip7)")),
+                    title: str | None = None):
+    """One column per entry of `fovs`: (hfov, label) or (hfov, label, layout) to compare different aims."""
     fig, axes = plt.subplots(2, len(fovs), figsize=(7.5 * len(fovs), 10.5), gridspec_kw=dict(hspace=.45), squeeze=False)
     cmap = ListedColormap(ZONE_COLORS)
-    for col, (hfov, label) in enumerate(fovs):
-        c = cov.analyse(court, layout, hfov)
+    for col, entry in enumerate(fovs):
+        hfov, label = entry[0], entry[1]
+        layout_c = entry[2] if len(entry) > 2 else layout
+        c = cov.analyse(court, layout_c, hfov)
         s = c.summary()
         ext = (0, court.length, 0, court.width)
         ax = axes[0, col]; draw_pitch(ax, court)
         ax.imshow(c.zone, extent=ext, origin="lower", cmap=cmap, vmin=-.5, vmax=3.5, alpha=.95, zorder=2)
-        draw_phones(ax, layout)
+        draw_phones(ax, layout_c)
         ax.set_title(f"{label} {hfov:g}°\n두 대 모두 {s['both_pct']:.0f}% · 한 대만 {s['single_pct']:.0f}% · 음영 {s['blind_m2']:.0f} m²")
         ax = axes[1, col]; draw_pitch(ax, court)
         im = ax.imshow(c.err, extent=ext, origin="lower", cmap="viridis_r", vmin=0, vmax=.75, alpha=.95, zorder=2)
-        ax.contour(c.xs, c.ys, c.err, levels=[0.4], colors="white", linewidths=1.5, linestyles="--", zorder=5)
-        draw_phones(ax, layout)
+        if np.nanmax(c.err) > 0.4:
+            ax.contour(c.xs, c.ys, c.err, levels=[0.4], colors="white", linewidths=1.5, linestyles="--", zorder=5)
+        draw_phones(ax, layout_c)
         ax.set_title(f"발 위치 1px 어긋날 때 좌표 오차: 중앙값 {s['err_median']:.2f} m, 최대 {s['err_max']:.2f} m\n점선 안쪽 = 0.4 m 이상 약한 구역 ({s['weak_pct']:.0f}%)")
         fig.colorbar(im, ax=ax, fraction=.025, label="m / px")
     fig.legend(handles=[Patch(color=z, label=l) for z, l in zip(ZONE_COLORS, ["두 대 모두 보임", "폰1만", "폰2만", "음영"])],
                loc="upper center", ncol=4, bbox_to_anchor=(.5, .985), frameon=False)
-    fig.suptitle(f"{layout.name} · 1x · 삼각대 {TRIPOD_HEIGHT:g} m · 1080p  (선수 발과 머리가 모두 화면에 있어야 '보임')", y=.94)
+    fig.suptitle(title or f"{layout.name} · 1x · 삼각대 {TRIPOD_HEIGHT:g} m · 1080p  (선수 발과 머리가 모두 화면에 있어야 '보임')", y=.94)
     fig.subplots_adjust(top=.86, bottom=.03, left=.03, right=.97, wspace=.12)
     fig.savefig(out, dpi=105); plt.close(fig)
 
