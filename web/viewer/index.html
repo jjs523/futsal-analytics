@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>풋살 2D 지도</title>
+<link rel="stylesheet" href="viewer.css">
+</head>
+<body>
+<header>
+  <h1>풋살 2D 지도</h1>
+  <div class="source">
+    <select id="match" aria-label="경기 선택"></select>
+    <button id="demo" type="button">데모 경기 만들기</button>
+  </div>
+</header>
+
+<main>
+  <section class="pitch-wrap">
+    <canvas id="pitch" aria-label="경기장 위 선수 위치"></canvas>
+    <div class="controls">
+      <button id="play" type="button" aria-label="재생">▶</button>
+      <input id="seek" type="range" min="0" max="0" value="0" step="1" aria-label="시간">
+      <span id="clock">0:00 / 0:00</span>
+      <select id="speed" aria-label="재생 속도">
+        <option value="1">1×</option><option value="2">2×</option><option value="4" selected>4×</option><option value="8">8×</option>
+      </select>
+      <label><input id="trails" type="checkbox" checked> 꼬리</label>
+    </div>
+    <p id="status" class="status"></p>
+  </section>
+
+  <section class="side">
+    <h2>선수 기록</h2>
+    <p class="hint">선수를 누르면 히트맵이 표시됩니다.</p>
+    <table id="stats">
+      <thead><tr><th>#</th><th>선수</th><th>이동거리</th><th>최고속도</th><th>스프린트</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+</main>
+
+<script src="court.js"></script>
+<script src="viewer.js"></script>
+</body>
+</html>

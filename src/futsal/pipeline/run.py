@@ -1,0 +1,49 @@
+"""Match-level assembly: per-camera pixel detections -> one TrackSet."""
+from __future__ import annotations
+
+import numpy as np
+
+from ..court import Court
+from ..fusion import Observation, fuse_frame
+from ..homography import Calibration
+from ..tracks import TrackSet
+from . import pitch_tracker
+from .detect import Detection
+
+DETECTOR_JITTER_PX = 3.0      # foot-point noise of the detector, used to weight cameras
+
+
+def to_observations(dets: list[Detection], cal: Calibration, camera: str, offset_s: float, fps_out: float,
+                    court: Court, margin: float = 1.0) -> dict[int, list[Observation]]:
+    """Pixels -> pitch, shift by the camera's sync offset, bucket to the output frame grid.
+    Points far outside the pitch (spectators, subs on the bench) are dropped."""
+    if not dets:
+        return {}
+    uv = np.array([[d.u, d.v] for d in dets])
+    xy = cal.to_pitch(uv)
+    sig = DETECTOR_JITTER_PX * cal.metres_per_pixel(uv)
+    inside = court.contains(xy, margin)
+    out: dict[int, list[Observation]] = {}
+    for d, p, s, ok in zip(dets, xy, sig, inside):
+        if not ok:
+            continue
+        k = int(round((d.t + offset_s) * fps_out))
+        if k < 0:
+            continue
+        out.setdefault(k, []).append(Observation(p, float(s), camera, team=d.team))
+    return out
+
+
+def build_tracks(court: Court, detections: dict[str, list[Detection]], calibrations: dict[str, Calibration],
+                 offsets: dict[str, float] | None = None, fps_out: float = 10.0, gate: float = 1.0) -> TrackSet:
+    offsets = offsets or {}
+    per_cam = {cam: to_observations(d, calibrations[cam], cam, offsets.get(cam, 0.0), fps_out, court)
+               for cam, d in detections.items() if cam in calibrations}
+    n = 1 + max((max(o) for o in per_cam.values() if o), default=-1)
+    frames = []
+    for k in range(n):
+        frames.append(fuse_frame({cam: obs.get(k, []) for cam, obs in per_cam.items()}, gate=gate))
+    players = pitch_tracker.stitch(pitch_tracker.track(frames, fps_out), fps_out)
+    ts = TrackSet(court.length, court.width, fps_out, players)
+    ts.compute_stats()
+    return ts
