@@ -1,4 +1,7 @@
-"""HTTP API. Both capture tracks use the same endpoints:
+"""개발용 PC 도구의 HTTP API (운영 서버 아님: 운영 분석은 폰에서 함, docs/architecture.md).
+팀원이 PC에서 실제 영상을 올려 정답 결과를 만들고 앱 결과와 비교하는 데 씁니다.
+
+HTTP API. Both capture tracks use the same endpoints:
 
 Track A (record, then upload):  one segment per camera (seq 0), uploaded after the match.
 Track B (in-app segmented recording): seq 0, 1, 2 ... uploaded while the match is still running;
