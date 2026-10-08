@@ -19,6 +19,7 @@ class Observation:
     camera: str
     track_id: int | None = None
     team: str | None = None
+    feat: np.ndarray | None = None     # appearance descriptor (pipeline.detect.appearance), if computed
 
 
 @dataclass
@@ -26,6 +27,16 @@ class Fused:
     xy: np.ndarray
     sigma: float
     sources: list[Observation]
+
+    @property
+    def team(self) -> str | None:
+        teams = [o.team for o in self.sources if o.team]
+        return max(set(teams), key=teams.count) if teams else None
+
+    @property
+    def feat(self) -> np.ndarray | None:
+        feats = [o.feat for o in self.sources if o.feat is not None]
+        return np.mean(feats, axis=0) if feats else None
 
 
 def inverse_variance_mean(obs: list[Observation]) -> tuple[np.ndarray, float]:

@@ -7,6 +7,7 @@
   search    --court 40x20 --hfov 67.3                   brute-force best two-phone placement
   accuracy  --court 40x20 --twist 5 --hfov 71.5         synthetic end-to-end position error
   tracks    --court 40x20 --seconds 300 --out x.json    synthetic tracks.json for the web viewer
+  idtest    --court 40x20 --seconds 120 --seed 5        ID tracking score: motion-only vs appearance
 """
 from __future__ import annotations
 
@@ -21,7 +22,7 @@ from . import coverage, layout, observe, scenario
 
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="python -m futsal.sim", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("command", choices=["figures", "fov", "coverage", "twist", "search", "accuracy", "tracks"])
+    ap.add_argument("command", choices=["figures", "fov", "coverage", "twist", "search", "accuracy", "tracks", "idtest"])
     ap.add_argument("--court", default="40x20")
     ap.add_argument("--twist", type=float, default=5.0)
     ap.add_argument("--hfov", type=float, default=layout.HFOV_NARROW)
@@ -56,6 +57,12 @@ def main(argv=None):
         e = observe.position_errors(truth, est)
         print(f"per-frame position error: median {np.median(e):.2f} m, mean {e.mean():.2f} m, p95 {np.percentile(e, 95):.2f} m")
         print("calibration rms px:", {k: round(c.rms_px, 2) for k, c in cals.items()})
+    elif a.command == "idtest":
+        from .idtest import run_experiment
+        res = run_experiment(court, a.seconds, a.seed)
+        for mode, s in res.items():
+            print(f"{mode:10s} IDF1 {s['idf1']:.3f}  ID switches {s['id_switches']:3d} ({s['id_switches'] / s['minutes']:.1f}/min)  "
+                  f"tracks {s['tracks']} for {s['players']} players")
     elif a.command == "tracks":
         truth = scenario.synthetic_match(court, a.seconds, seed=a.seed)
         est, _ = observe.run(truth, layout.diagonal(court, a.twist), layout.HFOV_AVERAGE, seed=a.seed)

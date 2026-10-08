@@ -25,6 +25,7 @@ class PlayerTrack:
     xy: np.ndarray                    # (n_frames, 2), NaN where unseen
     name: str | None = None
     stats: dict = field(default_factory=dict)
+    meta: dict = field(default_factory=dict)      # not serialised: e.g. synthetic appearance (height, colours)
 
 
 @dataclass
