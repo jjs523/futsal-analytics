@@ -13,10 +13,18 @@ from .detect import Detection
 DETECTOR_JITTER_PX = 3.0      # foot-point noise of the detector, used to weight cameras
 
 
-def to_observations(dets: list[Detection], cal: Calibration, camera: str, offset_s: float, fps_out: float,
+def clock(sync) -> tuple[float, float]:
+    """A camera's sync entry: a plain offset in seconds, or {"offset": s, "drift": ratio} from futsal.sync.align."""
+    if isinstance(sync, dict):
+        return float(sync.get("offset", 0.0)), float(sync.get("drift", 0.0))
+    return float(sync or 0.0), 0.0
+
+
+def to_observations(dets: list[Detection], cal: Calibration, camera: str, offset_s, fps_out: float,
                     court: Court, margin: float = 1.0) -> dict[int, list[Observation]]:
-    """Pixels -> pitch, shift by the camera's sync offset, bucket to the output frame grid.
+    """Pixels -> pitch, map the camera's clock onto the reference clock, bucket to the output frame grid.
     Points far outside the pitch (spectators, subs on the bench) are dropped."""
+    offset, drift = clock(offset_s)
     if not dets:
         return {}
     uv = np.array([[d.u, d.v] for d in dets])
@@ -27,7 +35,7 @@ def to_observations(dets: list[Detection], cal: Calibration, camera: str, offset
     for d, p, s, ok in zip(dets, xy, sig, inside):
         if not ok:
             continue
-        k = int(round((d.t + offset_s) * fps_out))
+        k = int(round((d.t + offset + drift * d.t) * fps_out))
         if k < 0:
             continue
         out.setdefault(k, []).append(Observation(p, float(s), camera, team=d.team))

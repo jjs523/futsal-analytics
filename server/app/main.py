@@ -43,7 +43,8 @@ class Taps(BaseModel):
 
 
 class Finish(BaseModel):
-    offsets: dict[str, float] | None = Field(None, description="seconds to add to each camera's clock; omit to sync by audio")
+    offsets: dict[str, float | dict[str, float]] | None = Field(
+        None, description='seconds to add to each camera\'s clock, or {"offset": s, "drift": ratio}; omit to sync by audio')
 
 
 

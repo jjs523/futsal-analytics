@@ -37,8 +37,11 @@ def detect_video(path: str, detector: Detector, stride: int = 3, t0: float = 0.0
             ok, frame = cap.retrieve()
             if not ok:
                 break
+            # Phone camera apps often record variable frame rate: use each frame's own timestamp, not i / fps.
+            ms = cap.get(cv2.CAP_PROP_POS_MSEC)
+            t = ms / 1000.0 if ms > 0 or i == 0 else i / fps
             for u, v, c, team in detector(frame):
-                out.append(Detection(i, t0 + i / fps, float(u), float(v), float(c), team))
+                out.append(Detection(i, t0 + t, float(u), float(v), float(c), team))
         i += 1
     cap.release()
     return out, float(fps), i
