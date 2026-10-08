@@ -12,6 +12,7 @@
 |---|---|---|
 | `src/futsal/` | **분석 기준 구현**: FIFA 규격 코트, 카메라 모델, 기준점 보정, 두 카메라 병합, 지표, 시간 맞추기, 결과 포맷. 앱(Dart)으로 옮길 원본이자 정답 비교용 | ✅ 테스트 있음 |
 | `src/futsal/sim/` | 배치·화각 시뮬레이터, 합성 경기·합성 영상 | ✅ |
+| `src/futsal/trackview.py`, `calibtool.py` | 실제 영상 → 검출 → 병합·추적 → 확인 영상(두 카메라 + 2D 지도 + ID 끊김 목록). 기준점 탭은 브라우저에서 | ✅ 합성 영상으로 검증 |
 | `src/futsal/camshift.py` | 촬영 중 카메라가 움직인 순간 자동 감지 → 시간 구간별 좌표 보정 | ✅ |
 | `src/futsal/check.py` | 촬영 영상 점검: `python -m futsal.check cam1.mp4 cam2.mp4` (프레임 간격, 밝기, 미리보기, 시간 차이) | ✅ |
 | `src/futsal/syncview.py` | 시간 맞추기 눈으로 확인: `python -m futsal.syncview cam1.mp4 cam2.mp4 --offset 124.29` (같은 순간 프레임 + 소리 겹쳐 그림) | ✅ |
@@ -48,5 +49,6 @@ python -m futsal.sim accuracy --hfov 67.3                              # 합성 
 - [로드맵과 다음 단계](docs/roadmap.md)
 - [팀원 폰 YOLO 검출 속도 측정 방법](docs/phone-benchmark.md)
 - [선수 ID 추적: 기존 방법 조사와 우리 선택](docs/tracking-survey.md)
+- [추적 결과 영상 만들기 (실제 영상, 기준점 탭부터)](docs/tracking-check.md)
 - [공 검출: 학습 계획과 도구 (라벨링·Colab 학습·조각 검출)](docs/ball-detection.md)
 - [2026-10-08 테스트 촬영 기록 (영상 점검·시간 맞추기 결과)](docs/capture-2026-10-08.md)

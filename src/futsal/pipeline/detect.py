@@ -73,10 +73,12 @@ def dequantize(q) -> np.ndarray | None:
 
 def detect_video(path: str, detector: Detector, stride: int = 3, t0: float = 0.0, feat_every: int = 2,
                  scale: float = 1.0, min_feat_px: float = 24, max_aspect: float = 0.6,
-                 rate_hz: float | None = None) -> tuple[list[Detection], float, int]:
+                 rate_hz: float | None = None, start_s: float = 0.0, end_s: float | None = None,
+                 progress: bool = False) -> tuple[list[Detection], float, int]:
     """Run `detector` on every `stride`-th frame (appearance on every `feat_every`-th of those).
     `rate_hz` sets the stride from the video's frame rate instead (10 -> every 3rd frame at 30 fps, every 6th at 60),
     so two phones recording at different frame rates give detections at the same rate.
+    `start_s` / `end_s` limit the work to part of the video (times stay those of the whole video).
     Appearance is skipped for boxes too small to have meaningful colours (< `min_feat_px` tall in the video)
     and for boxes wider than `max_aspect` x height, which usually hold two overlapping players.
     `scale` maps pixel coordinates back to the calibrated resolution (e.g. 2.0 if the video is half size).
@@ -87,10 +89,14 @@ def detect_video(path: str, detector: Detector, stride: int = 3, t0: float = 0.0
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     if rate_hz:
         stride = max(1, int(round(fps / rate_hz)))
+    if start_s > 0:
+        cap.set(cv2.CAP_PROP_POS_MSEC, start_s * 1000)
     out, i, k = [], 0, 0
     while True:
         ok = cap.grab()
         if not ok:
+            break
+        if end_s is not None and cap.get(cv2.CAP_PROP_POS_MSEC) / 1000 > end_s:
             break
         if i % stride == 0:
             ok, frame = cap.retrieve()
@@ -98,13 +104,16 @@ def detect_video(path: str, detector: Detector, stride: int = 3, t0: float = 0.0
                 break
             # Phone camera apps often record variable frame rate: use each frame's own timestamp, not i / fps.
             ms = cap.get(cv2.CAP_PROP_POS_MSEC)
-            t = ms / 1000.0 if ms > 0 or i == 0 else i / fps
+            t = ms / 1000.0 if ms > 0 or (i == 0 and start_s <= 0) else start_s + i / fps
             with_feat = k % feat_every == 0
             for x1, y1, x2, y2, c, team in detector(frame):
                 good = with_feat and (y2 - y1) >= min_feat_px and (x2 - x1) <= max_aspect * (y2 - y1)
                 feat = quantize(appearance(frame, (x1, y1, x2, y2))) if good else None
                 out.append(Detection(i, t0 + t, (x1 + x2) / 2 * scale, y2 * scale, float(c), team, (y2 - y1) * scale, feat))
             k += 1
+            if progress and k % 200 == 0:
+                span = f"/{end_s - start_s:.0f}" if end_s is not None else ""
+                print(f"    {t - start_s:.0f}{span}초")
         i += 1
     cap.release()
     return out, float(fps), i
