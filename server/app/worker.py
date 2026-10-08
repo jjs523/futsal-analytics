@@ -23,7 +23,7 @@ log = logging.getLogger("futsal.worker")
 
 # Swappable so tests / demos can use the synthetic colour-blob detector instead of YOLO.
 DETECTOR_FACTORY = {"factory": lambda: detect.yolo_detector()}
-STRIDE = 3            # 30 fps video -> detections at 10 Hz
+DETECT_HZ = 10.0      # detections per second, whatever the video's frame rate (30 fps -> every 3rd frame, 60 -> 6th)
 
 
 def run_job(store: Store, job: dict) -> None:
@@ -32,7 +32,7 @@ def run_job(store: Store, job: dict) -> None:
         cam, seq = p["camera"], p["seq"]
         seg = store.segment(mid, cam, seq)
         t0 = seg["t0"] if seg["t0"] is not None else _implicit_t0(store, mid, cam, seq)
-        dets, fps, n = detect.detect_video(str(store.segment_path(mid, cam, seq)), DETECTOR_FACTORY["factory"](), stride=STRIDE, t0=t0)
+        dets, fps, n = detect.detect_video(str(store.segment_path(mid, cam, seq)), DETECTOR_FACTORY["factory"](), rate_hz=DETECT_HZ, t0=t0)
         detect.save(dets, str(store.detections_path(mid, cam, seq)), fps=fps, frames=n, t0=t0)
         store.mark_processed(mid, cam, seq, n / fps)
     elif kind == "finalize":

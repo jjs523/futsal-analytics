@@ -3,3 +3,14 @@ __pycache__/
 *.pyc
 .pytest_cache/
 *.egg-info/
+
+# 촬영 영상·점검 결과는 저장소에 올리지 않음 (원본은 드라이브 등으로 공유)
+*.mp4
+*.MP4
+*.mov
+*.MOV
+check_report/
+labeling/
+datasets/
+runs/
+sync_check/

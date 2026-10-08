@@ -29,6 +29,12 @@ class Calibration:
     def metres_per_pixel(self, uv) -> np.ndarray:
         return metres_per_pixel(self.H, uv)
 
+    def shifted(self, dx: float, dy: float) -> "Calibration":
+        """The same camera after it was nudged and the picture slid by (dx, dy) pixels (what was at u is now at
+        u + dx). Good for small knocks of the tripod; re-tap the keypoints if the view also rotated or zoomed."""
+        T = np.array([[1.0, 0.0, -dx], [0.0, 1.0, -dy], [0.0, 0.0, 1.0]])
+        return Calibration(self.H @ T, self.rms_px, list(self.used))
+
     def to_json(self) -> dict:
         return {"H": self.H.tolist(), "rms_px": self.rms_px, "used": self.used}
 
@@ -75,3 +81,49 @@ def calibrate(taps: dict[str, tuple[float, float]], court: Court, ransac_px: flo
     back = image_to_pitch(H_wi, world[keep])
     rms = float(np.sqrt(np.mean(np.sum((back - img[keep]) ** 2, 1))))
     return Calibration(H=H, rms_px=rms, used=[n for n, k in zip(names, keep) if k])
+
+
+# A camera that was moved during the match: [(from_s, Calibration), ...] sorted by start time on that camera's own
+# clock (video seconds), e.g. [(0, before), (160.0, after)] for a tripod knocked at 2:40.
+CalibrationTimeline = list[tuple[float, Calibration]]
+
+
+def calibration_at(cal: "Calibration | CalibrationTimeline", t: float) -> Calibration:
+    if isinstance(cal, Calibration):
+        return cal
+    current = cal[0][1]
+    for start, c in cal:
+        if t >= start:
+            current = c
+    return current
+
+
+def timeline_from_json(d) -> "Calibration | CalibrationTimeline":
+    """{"H": ...} for one calibration, or [{"from": seconds, "H": ...}, ...] when the camera moved."""
+    if isinstance(d, list):
+        return sorted(((float(x.get("from", 0.0)), Calibration.from_json(x)) for x in d), key=lambda p: p[0])
+    return Calibration.from_json(d)
+
+
+def framing(cal: Calibration, width: int, height: int, court: Court, step: float = 1.0) -> dict:
+    """How much of the court this camera sees, and which way to turn it to see more. Pitch points on a `step` m
+    grid are projected into the image; those outside tell the direction (e.g. mostly above the top edge -> tilt up).
+    Used right after the keypoint taps so that a badly aimed phone is caught before the match, not after."""
+    xs = np.arange(step / 2, court.length, step)
+    ys = np.arange(step / 2, court.width, step)
+    grid = np.array([(x, y) for x in xs for y in ys])
+    uv = cal.to_image(grid)
+    Hi = cal.H_inv
+    w = grid @ Hi[2, :2] + Hi[2, 2]                       # > 0: in front of the camera
+    front = w > 0
+    inside = front & (uv[:, 0] >= 0) & (uv[:, 0] < width) & (uv[:, 1] >= 0) & (uv[:, 1] < height)
+    out = ~inside
+    counts = {"up": int(np.sum(out & front & (uv[:, 1] < 0))), "down": int(np.sum(out & front & (uv[:, 1] >= height))),
+              "left": int(np.sum(out & front & (uv[:, 0] < 0))), "right": int(np.sum(out & front & (uv[:, 0] >= width))),
+              "behind": int(np.sum(~front))}
+    advice = None
+    if out.mean() > 0.05:
+        side = max(("up", "down", "left", "right"), key=lambda k: counts[k])
+        advice = {"up": "카메라를 위로 드세요", "down": "카메라를 아래로 숙이세요",
+                  "left": "카메라를 왼쪽으로 돌리세요", "right": "카메라를 오른쪽으로 돌리세요"}[side]
+    return {"visible": float(inside.mean()), "outside": counts, "advice": advice}
