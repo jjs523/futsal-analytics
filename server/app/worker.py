@@ -59,7 +59,7 @@ def run_job(store: Store, job: dict) -> None:
         raise ValueError(f"unknown job kind {kind}")
 
 
-def _audio_offsets(store: Store, mid: str, cams: list[str], min_confidence: float = 6.0) -> dict[str, float]:
+def _audio_offsets(store: Store, mid: str, cams: list[str], min_confidence: float = 6.0) -> dict:
     """Align every camera to the first one using the audio of their first segments. Falls back to 0 s
     (videos started together) when there is no usable audio; the client can always send offsets explicitly."""
     from futsal import sync
@@ -69,11 +69,13 @@ def _audio_offsets(store: Store, mid: str, cams: list[str], min_confidence: floa
     try:
         ref = sync.read_audio(str(store.segment_path(mid, cams[0], 0)))
         for cam in cams[1:]:
-            off, conf = sync.estimate_offset(ref, sync.read_audio(str(store.segment_path(mid, cam, 0))), 16000)
-            if conf >= min_confidence:
-                offsets[cam] = off
+            res = sync.align(ref, sync.read_audio(str(store.segment_path(mid, cam, 0))), 16000)
+            if res["conf_start"] >= min_confidence and (res["conf_end"] is None or res["conf_end"] >= min_confidence):
+                offsets[cam] = {"offset": res["offset"], "drift": res["drift"]}
+            elif res["conf_start"] >= min_confidence:
+                offsets[cam] = res["offset_start"]
             else:
-                log.warning("audio sync for %s not confident (%.1f); assuming 0 s", cam, conf)
+                log.warning("audio sync for %s not confident (%.1f); assuming 0 s", cam, res["conf_start"])
     except Exception as e:   # no audio stream, ffmpeg missing, ...
         log.warning("audio sync skipped: %s", e)
     return offsets

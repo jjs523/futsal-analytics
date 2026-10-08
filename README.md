@@ -43,3 +43,4 @@ python -m futsal.sim accuracy --hfov 67.3                              # 합성 
 - [시뮬레이션 방법과 결과](docs/simulation.md)
 - [로드맵과 다음 단계](docs/roadmap.md)
 - [팀원 폰 YOLO 검출 속도 측정 방법](docs/phone-benchmark.md)
+- [선수 ID 추적: 기존 방법 조사와 우리 선택](docs/tracking-survey.md)

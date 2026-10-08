@@ -117,3 +117,30 @@ def test_trackset_roundtrip(tmp_path):
     back = TrackSet.load(tmp_path / "t.json")
     assert np.allclose(back.players[0].xy, xy, equal_nan=True)
     assert back.players[0].stats["seen_ratio"] == pytest.approx(2 / 3)
+
+
+def _match_audio(seconds, sr, rng):
+    x = rng.normal(0, 0.01, int(seconds * sr))
+    for t in np.r_[[1.0, 1.5, 2.0], rng.uniform(3, seconds - 3, int(seconds / 4)), [seconds - 2.5, seconds - 2.0, seconds - 1.5]]:
+        i = int(t * sr); x[i:i + 300] += rng.normal(0, 0.8, 300)     # claps at both ends + ball strikes
+    return x
+
+
+def test_align_recovers_offset_and_clock_drift():
+    from futsal.sync import align
+    sr, rng = 8000, np.random.default_rng(1)
+    a = _match_audio(600, sr, rng)                     # 10 min, phone 1 clock
+    off, drift = 3.2, 80e-6                            # phone 2 started 3.2 s later and runs 80 ppm slow
+    tb = np.arange(int((600 - 5) * sr)) / sr           # phone 2 sample times
+    ta = tb + off + drift * tb                         # same instants on phone 1's clock
+    b = np.interp(ta, np.arange(len(a)) / sr, a) + rng.normal(0, 0.01, len(tb))
+    r = align(a, b, sr, window_s=60)
+    assert r["offset"] == pytest.approx(off, abs=0.01)
+    assert r["drift"] == pytest.approx(drift, abs=20e-6)
+    assert r["conf_start"] > 6 and r["conf_end"] > 6
+
+
+def test_drift_is_applied_when_bucketing_frames():
+    from futsal.pipeline.run import clock
+    assert clock(1.5) == (1.5, 0.0)
+    assert clock({"offset": 1.5, "drift": 1e-4}) == (1.5, 1e-4)
