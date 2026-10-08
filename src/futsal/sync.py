@@ -31,21 +31,27 @@ def estimate_offset(a: np.ndarray, b: np.ndarray, sample_rate: int, max_lag_s: f
     return float((lags[i] + frac) / hop_rate), conf
 
 
-def align(a: np.ndarray, b: np.ndarray, sample_rate: int, window_s: float = 120.0, max_lag_s: float = 30.0) -> dict:
+def align(a: np.ndarray, b: np.ndarray, sample_rate: int, window_s: float = 120.0, max_lag_s: float = 30.0,
+          hint_s: float = 0.0) -> dict:
     """Clock mapping between two recordings of the same match:  t_a = t_b + offset + drift * t_b.
     The offset is measured in a window at the start and another at the end (claps / whistles there help);
-    their difference is the clock drift between the two phones (typically tens of ppm, ~0.1 s per hour)."""
+    their difference is the clock drift between the two phones (typically tens of ppm, ~0.1 s per hour).
+    `hint_s` is a rough offset (e.g. from the recording start times in the file names) when the phones were
+    started minutes apart: the start windows are shifted by it and only +-`max_lag_s` around it is searched."""
     sr, w = sample_rate, int(window_s * sample_rate)
-    o_start, c_start = estimate_offset(a[:w], b[:w], sr, max_lag_s)
+    sa, sb = max(hint_s, 0.0), max(-hint_s, 0.0)                 # where the shared start window begins in a / b
+    ia, ib = int(sa * sr), int(sb * sr)
+    local, c_start = estimate_offset(a[ia:ia + w], b[ib:ib + w], sr, max_lag_s)
+    o_start = local + sa - sb
     res = {"offset": o_start, "drift": 0.0, "offset_start": o_start, "conf_start": c_start,
            "offset_end": None, "conf_end": None}
     if len(b) < 3 * w or len(a) < 3 * w:          # too short to see drift
         return res
-    tb = len(b) / sr - window_s                    # end window of b, and where it should sit in a
+    tb = min(len(b) / sr, len(a) / sr - o_start) - window_s     # end window inside both recordings
     ta = min(max(tb + o_start, 0.0), len(a) / sr - window_s)
     local, c_end = estimate_offset(a[int(ta * sr):int(ta * sr) + w], b[int(tb * sr):int(tb * sr) + w], sr, max_lag_s)
     o_end = local + ta - tb
-    centre_start, centre_end = window_s / 2, tb + window_s / 2
+    centre_start, centre_end = sb + window_s / 2, tb + window_s / 2
     drift = (o_end - o_start) / (centre_end - centre_start)
     res.update(offset=o_start - drift * centre_start, drift=drift, offset_end=o_end, conf_end=c_end)
     return res
@@ -72,6 +78,27 @@ def creation_time(video_path: str) -> str | None:
     return out.strip() or None
 
 
+def filename_time(video_path: str):
+    """Recording start time from phone file names like 20261008_170919.mp4 (Samsung) or
+    VID_20261008_170919.mp4 / PXL_20261008_170919123.mp4 (other Android); None if the name has no time."""
+    import datetime as dt
+    import os
+    import re
+    m = re.search(r"(20\d{6})_(\d{6})", os.path.basename(video_path))
+    if not m:
+        return None
+    try:
+        return dt.datetime.strptime(m.group(1) + m.group(2), "%Y%m%d%H%M%S")
+    except ValueError:
+        return None
+
+
+def start_hint(ref: str, other: str) -> float | None:
+    """Rough offset (s) from the file names: how much later `other` started than `ref`."""
+    ta, tb = filename_time(ref), filename_time(other)
+    return None if ta is None or tb is None else (tb - ta).total_seconds()
+
+
 def read_audio(video_path: str, sample_rate: int = 16000) -> np.ndarray:
     """Mono float32 audio from a video file via ffmpeg."""
     if not shutil.which("ffmpeg"):
@@ -90,10 +117,16 @@ def main(argv=None):
     ap.add_argument("other", help="맞출 영상 (cam2)")
     ap.add_argument("--window", type=float, default=120.0, help="시작·끝에서 비교할 구간 길이(초)")
     ap.add_argument("--max-lag", type=float, default=30.0, help="두 영상 시작 차이의 최대값(초)")
+    ap.add_argument("--hint", type=float, default=None,
+                    help="대략적인 시작 차이(초, other가 늦게 시작하면 +). 생략하면 파일 이름의 녹화 시각으로 계산")
     ap.add_argument("--json", action="store_true")
     a = ap.parse_args(argv)
     sr = 16000
-    res = align(read_audio(a.ref, sr), read_audio(a.other, sr), sr, a.window, a.max_lag)
+    hint = a.hint if a.hint is not None else (start_hint(a.ref, a.other) or 0.0)
+    if hint:
+        print(f"대략적인 시작 차이 {hint:+.0f} s 주변 ±{a.max_lag:.0f} s에서 찾습니다")
+    res = align(read_audio(a.ref, sr), read_audio(a.other, sr), sr, a.window, a.max_lag, hint)
+    res["hint"] = hint
     res["creation_time"] = {"ref": creation_time(a.ref), "other": creation_time(a.other)}
     if a.json:
         print(json.dumps(res, ensure_ascii=False, indent=1))

@@ -72,8 +72,11 @@ def dequantize(q) -> np.ndarray | None:
 
 
 def detect_video(path: str, detector: Detector, stride: int = 3, t0: float = 0.0, feat_every: int = 2,
-                 scale: float = 1.0, min_feat_px: float = 24, max_aspect: float = 0.6) -> tuple[list[Detection], float, int]:
+                 scale: float = 1.0, min_feat_px: float = 24, max_aspect: float = 0.6,
+                 rate_hz: float | None = None) -> tuple[list[Detection], float, int]:
     """Run `detector` on every `stride`-th frame (appearance on every `feat_every`-th of those).
+    `rate_hz` sets the stride from the video's frame rate instead (10 -> every 3rd frame at 30 fps, every 6th at 60),
+    so two phones recording at different frame rates give detections at the same rate.
     Appearance is skipped for boxes too small to have meaningful colours (< `min_feat_px` tall in the video)
     and for boxes wider than `max_aspect` x height, which usually hold two overlapping players.
     `scale` maps pixel coordinates back to the calibrated resolution (e.g. 2.0 if the video is half size).
@@ -82,6 +85,8 @@ def detect_video(path: str, detector: Detector, stride: int = 3, t0: float = 0.0
     if not cap.isOpened():
         raise RuntimeError(f"cannot open video {path}")
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    if rate_hz:
+        stride = max(1, int(round(fps / rate_hz)))
     out, i, k = [], 0, 0
     while True:
         ok = cap.grab()

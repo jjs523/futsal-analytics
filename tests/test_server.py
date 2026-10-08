@@ -16,7 +16,7 @@ SCALE = 0.5            # videos are rendered at 960x540
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
     monkeypatch.setitem(worker.DETECTOR_FACTORY, "factory", lambda: detect.color_blob_detector(video.TEAM_BGR))
-    monkeypatch.setattr(worker, "STRIDE", 1)
+    monkeypatch.setattr(worker, "DETECT_HZ", 1000.0)      # every frame
     app = create_app(str(tmp_path / "data"), start_worker=False)
     with TestClient(app) as c:
         c.store = app.state.store

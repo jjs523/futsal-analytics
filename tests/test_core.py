@@ -144,3 +144,32 @@ def test_drift_is_applied_when_bucketing_frames():
     from futsal.pipeline.run import clock
     assert clock(1.5) == (1.5, 0.0)
     assert clock({"offset": 1.5, "drift": 1e-4}) == (1.5, 1e-4)
+
+
+def test_align_with_start_hint_when_phones_started_minutes_apart():
+    from futsal.sync import align, start_hint
+    sr, rng = 8000, np.random.default_rng(2)
+    a = _match_audio(900, sr, rng)                     # phone 1: 15 min
+    off, drift = 123.4, -60e-6                         # phone 2 started 2 min later (as in the file names)
+    tb = np.arange(int((900 - off - 10) * sr)) / sr
+    b = np.interp(tb + off + drift * tb, np.arange(len(a)) / sr, a) + rng.normal(0, 0.01, len(tb))
+    assert start_hint("x/20261008_170919.mp4", "y/20261008_171122.mp4") == 123.0
+    r = align(a, b, sr, window_s=60, hint_s=123.0)
+    assert r["offset"] == pytest.approx(off, abs=0.01)
+    assert r["drift"] == pytest.approx(drift, abs=20e-6)
+    assert start_hint("cam1.mp4", "cam2.mp4") is None
+
+
+def test_detection_rate_is_per_second_whatever_the_frame_rate(tmp_path):
+    import cv2
+    from futsal.pipeline.detect import detect_video
+    counts = {}
+    for fps in (30, 60):
+        path = str(tmp_path / f"v{fps}.mp4")
+        vw = cv2.VideoWriter(path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (160, 90))
+        for _ in range(fps * 3):
+            vw.write(np.zeros((90, 160, 3), np.uint8))
+        vw.release()
+        dets, _, _ = detect_video(path, lambda f: [(10, 10, 20, 40, 0.9, None)], rate_hz=10)
+        counts[fps] = len(dets)
+    assert counts[30] == counts[60] == 30
