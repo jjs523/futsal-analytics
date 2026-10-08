@@ -86,3 +86,19 @@ def test_find_events_flags_mid_pitch_breaks_only():
     c = np.tile([10.0, 10.0], (n, 1))                              # whole window
     ev = trackview.find_events(TrackSet(40, 20, 10, [PlayerTrack(1, "A", a), PlayerTrack(2, "A", b), PlayerTrack(3, "B", c)]), COURT)
     assert [(e["id"], e["kind"]) for e in ev] == [(1, "lost")]
+
+
+def test_cam2_page_is_drawn_from_its_own_corner_and_flips_are_fixed(tmp_path):
+    _, cams, paths = _setup(tmp_path)
+    page = calibtool.make_tap_page(paths["cam2"], 3.0, str(tmp_path / "c2"), COURT, "cam2")
+    d = json.loads(open(page, encoding="utf-8").read().split("const D = ", 1)[1].split(";\n", 1)[0])
+    mine = next(k for k in d["keypoints"] if k["label"] == "내 폰 바로 앞 모서리")
+    assert mine["name"] == "corner_tr" and mine["xy"] == [0.0, 0.0]          # drawn bottom-left, saved as the real corner
+    assert not any(k["name"].startswith("sub_mark") for k in d["keypoints"])
+    good = {k: v for k, v in _taps(cams["cam2"]).items() if not k.startswith("sub_mark")}
+    wrong = {calibtool.rotated_name(COURT, k): v for k, v in good.items()}        # tapped as if it were cam1
+    base = {"at": 3.0, "width": d["width"], "height": d["height"], "court": [40, 20], "camera": "cam2"}
+    for taps, flipped in ((good, False), (wrong, True)):
+        (tmp_path / "c2" / "taps.json").write_text(json.dumps(base | {"taps": taps}))
+        r = calibtool.fit(str(tmp_path / "c2" / "taps.json"))
+        assert r["flipped_180"] is flipped and r["rms_px"] < 1 and r["framing"]["visible"] > 0.3

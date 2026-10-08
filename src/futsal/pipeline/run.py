@@ -36,14 +36,19 @@ def to_observations(dets: list[Detection], cal: Calibration | CalibrationTimelin
         xy[m] = c.to_pitch(uv[m])
         sig[m] = DETECTOR_JITTER_PX * c.metres_per_pixel(uv[m])
     inside = court.contains(xy, margin)
+    # one detection sample per output frame: a 60.04 fps video sampled every 6th frame occasionally puts two
+    # samples into the same 0.1 s bucket, which would show every player twice in that frame
+    t_ref = np.array([d.t + offset + drift * d.t for d in dets])
+    k_of = np.round(t_ref * fps_out).astype(int)
+    best: dict[int, float] = {}
+    for k, tr in zip(k_of, t_ref):
+        if k not in best or abs(tr - k / fps_out) < abs(best[k] - k / fps_out):
+            best[k] = tr
     out: dict[int, list[Observation]] = {}
-    for d, p, s, ok in zip(dets, xy, sig, inside):
-        if not ok:
+    for d, p, s, ok, k, tr in zip(dets, xy, sig, inside, k_of, t_ref):
+        if not ok or k < 0 or tr != best[k]:
             continue
-        k = int(round((d.t + offset + drift * d.t) * fps_out))
-        if k < 0:
-            continue
-        out.setdefault(k, []).append(Observation(p, float(s), camera, team=d.team, feat=dequantize(d.feat)))
+        out.setdefault(int(k), []).append(Observation(p, float(s), camera, team=d.team, feat=dequantize(d.feat)))
     return out
 
 
@@ -63,6 +68,7 @@ def build_tracks(court: Court, detections: dict[str, list[Detection]], calibrati
     else:
         players = pitch_tracker.associate(pitch_tracker.tracklets(frames, fps_out, ambiguity=0.4), len(frames), fps_out)
         players = pitch_tracker.absorb_duplicates(players)
+    players = pitch_tracker.split_jumps(players, fps_out)            # impossible jumps: glitch or two people
     ts = TrackSet(court.length, court.width, fps_out, players)
     ts.compute_stats()
     return ts

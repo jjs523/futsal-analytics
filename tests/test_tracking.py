@@ -60,3 +60,27 @@ def test_hungarian_matches_bruteforce():
         best = min(sum(c[i, p[i]] for i in range(4)) for p in itertools.permutations(range(4)))
         got = sum(c[i, j] for i, j in evaluate._hungarian(c))
         assert abs(best - got) < 1e-9
+
+
+def test_split_jumps_drops_glitches_and_cuts_real_swaps():
+    n = 60
+    a = np.stack([np.linspace(5, 11, n), np.full(n, 10.0)], 1)
+    a[30] = [25, 10]                                   # one-frame glitch 14 m away
+    b = a.copy(); b[30] = a[29]
+    b[40:] = [30, 15]                                  # carries on 19 m away: a second person
+    out = pitch_tracker.split_jumps([PlayerTrack(1, "A", a), PlayerTrack(2, "A", b)], FPS)
+    one = [t for t in out if t.id == 1]
+    assert len(one) == 1 and np.isnan(one[0].xy[30, 0]) and np.isfinite(one[0].xy[31, 0])
+    two = sorted((t for t in out if t.id != 1), key=lambda t: np.flatnonzero(np.isfinite(t.xy[:, 0]))[0])
+    assert len(two) == 2 and two[0].id == 2 and np.isfinite(two[1].xy[40:, 0]).all()
+
+
+def test_associate_never_joins_two_people_running_side_by_side():
+    """A long tracklet overlapping a later one that is NOT its start-order neighbour must still block the join
+    (they look alike, so appearance alone would happily merge them)."""
+    f0 = [np.r_[np.eye(15)[0], np.eye(15)[12]]]
+    long = pitch_tracker.Tracklet(1, "A", {f: np.array([5.0 + 0.1 * f, 5.0]) for f in range(0, 60)}, f0 * 5)
+    short = pitch_tracker.Tracklet(2, "A", {f: np.array([5.0 + 0.1 * f, 5.5]) for f in range(10, 13)}, f0)   # duplicate
+    other = pitch_tracker.Tracklet(3, "A", {f: np.array([5.0 + 0.1 * f, 7.0]) for f in range(14, 40)}, f0 * 5)  # 2 m away
+    out = pitch_tracker.associate([long, short, other], 60, FPS)
+    assert len(out) == 2

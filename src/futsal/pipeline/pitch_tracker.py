@@ -245,6 +245,21 @@ def associate(tracks: list[Tracklet], n_frames: int, fps: float, max_speed: floa
     clusters = [_Cluster(t) for t in tracks if t.points]
 
     def junction_cost(c1: _Cluster, c2: _Cluster) -> float:
+        # overlap between ANY two parts of the two groups (not only neighbours in start order: a long part can
+        # run alongside several later ones): two people, unless it is a short duplicate of the same player
+        for a in c1.parts:
+            for b in c2.parts:
+                if b.start > a.end or a.start > b.end:
+                    continue
+                shared = [f for f in b.points if f in a.points]
+                if not shared:
+                    continue
+                d = np.array([np.linalg.norm(a.points[f] - b.points[f]) for f in shared])
+                if len(shared) <= max_overlap:
+                    if np.any(d > dup_dist):
+                        return np.inf
+                elif np.mean(d <= dup_dist) < 0.8 or np.median(d) > dup_dist / 2:
+                    return np.inf                                # long overlap is OK only as the same player twice
         parts = sorted(c1.parts + c2.parts, key=lambda p: p.start)
         mine = {id(p) for p in c1.parts}
         own = {id(p): (c1 if id(p) in mine else c2) for p in parts}
@@ -252,10 +267,7 @@ def associate(tracks: list[Tracklet], n_frames: int, fps: float, max_speed: floa
         for a, b in zip(parts, parts[1:]):
             if own[id(a)] is own[id(b)]:
                 continue
-            if b.start <= a.end:                                 # overlap: two people, unless it is a short
-                shared = [f for f in b.points if f in a.points]  # duplicate of the same player (unfused cameras)
-                if len(shared) > max_overlap or any(np.linalg.norm(a.points[f] - b.points[f]) > dup_dist for f in shared):
-                    return np.inf
+            if b.start <= a.end:                                 # duplicate of the same player, checked above
                 continue
             gap = (b.start - a.end) / fps
             d = float(np.linalg.norm(b.points[b.start] - a.points[a.end]))
@@ -330,9 +342,52 @@ def absorb_duplicates(tracks: list[PlayerTrack], dist: float = 1.5, min_share: f
                 break
         if host is None:
             keep.append(PlayerTrack(t.id, t.team, t.xy.copy(), t.name))
-        else:
+        else:                                   # fill the host's gaps, but only where the duplicate stays reachable
             fill = seen & ~np.isfinite(host.xy[:, 0])
             host.xy[fill] = t.xy[fill]
+
     for i, t in enumerate(keep, 1):
         t.id = i
     return keep
+
+
+def split_jumps(tracks: list[PlayerTrack], fps: float, max_speed: float = 10.0, slack: float = 3.0,
+                glitch_s: float = 1.0, min_length_s: float = 0.5) -> list[PlayerTrack]:
+    """Last safety net against impossible moves (faster than anyone can run between two seen frames).
+    A short stretch (< `glitch_s`) that jumps away and back is a glitch (a wrong fusion or detection): its
+    frames are dropped. A jump after which the track carries on elsewhere holds two people: cut it there."""
+    def runs(xy):
+        seen = np.flatnonzero(np.isfinite(xy[:, 0]))
+        cuts = [0] + [i + 1 for i, (a, b) in enumerate(zip(seen, seen[1:]))
+                      if np.linalg.norm(xy[b] - xy[a]) > max_speed * (b - a) / fps + slack] + [len(seen)]
+        return [seen[c0:c1] for c0, c1 in zip(cuts, cuts[1:]) if c1 > c0]
+
+    out: list[PlayerTrack] = []
+    next_id = max((t.id for t in tracks), default=0) + 1
+    for t in tracks:
+        xy = t.xy.copy()
+        for _ in range(5):                                  # drop glitches between two longer pieces, repeat
+            pieces = runs(xy)
+            short = [r for k, r in enumerate(pieces) if 0 < k < len(pieces) - 1 and len(r) < glitch_s * fps]
+            if not short:
+                break
+            for r in short:
+                xy[r] = np.nan
+        pieces = runs(xy)
+        if len(pieces) > 1:                                 # the ends may be glitches too
+            if len(pieces[0]) < glitch_s * fps:
+                xy[pieces[0]] = np.nan
+            if len(pieces[-1]) < glitch_s * fps:
+                xy[pieces[-1]] = np.nan
+            pieces = runs(xy)
+        first = True
+        for r in pieces:
+            if len(r) < min_length_s * fps:
+                continue
+            part = np.full_like(xy, np.nan)
+            part[r] = xy[r]
+            pid = t.id if first else next_id
+            next_id += 0 if first else 1
+            first = False
+            out.append(PlayerTrack(pid, t.team, part, t.name if pid == t.id else None))
+    return out

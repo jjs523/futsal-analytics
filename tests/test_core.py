@@ -220,3 +220,33 @@ def test_calibration_timeline_for_a_knocked_tripod():
     obs = to_observations(dets, tl, "cam1", 0.0, 10.0, court, margin=50)
     pts = [o.xy for k in sorted(obs) for o in obs[k]]
     assert len(pts) == 2 and np.allclose(pts[0], pts[1])               # same pitch spot before and after the knock
+
+
+def test_calibrate_fits_lens_distortion_only_when_it_helps():
+    from futsal.homography import Calibration, calibrate
+    court = Court()
+    pos = (-1.3, -1.3)
+    cam = Camera.on_tripod(pos, 2.2, yaw_towards(pos, (20, 10)), 72)
+    kp = court.keypoints()
+    uv, ok = cam.project(np.array(list(kp.values())))
+    inside = ok & (uv[:, 0] > 0) & (uv[:, 0] < 1920) & (uv[:, 1] > 0) & (uv[:, 1] < 1080)
+    names = [n for n, k in zip(kp, inside) if k]
+    rng = np.random.default_rng(0)
+    lens = Calibration(np.eye(3), 0, [], -0.08, (960.0, 540.0), float(np.hypot(1920, 1080) / 2))   # barrel distortion
+    clean = {n: tuple(p) for n, p in zip(names, uv[inside] + rng.normal(0, 0.5, (inside.sum(), 2)))}
+    bent = {n: tuple(lens.distort([p])[0]) for n, p in clean.items()}
+    assert len(names) >= 8
+    plain = calibrate(bent, court, 8, (1920, 1080), distortion=False)
+    fitted = calibrate(bent, court, 8, (1920, 1080))
+    assert abs(fitted.k1 + 0.08) < 0.02 and fitted.rms_px < 1.5 < plain.rms_px
+    assert len(fitted.used) >= len(plain.used)
+    # a player's foot near the frame edge lands within 10 cm with the distortion model
+    foot = np.array([[3.0, 4.0]])
+    pix, _ = cam.project(foot)
+    seen = lens.distort(pix)
+    assert np.linalg.norm(fitted.to_pitch(seen) - foot) < 0.1
+    assert np.allclose(fitted.to_image(fitted.to_pitch(seen)), seen, atol=0.5)
+    # undistorted taps: no distortion is invented
+    assert calibrate(clean, court, 8, (1920, 1080)).k1 == 0.0
+    back = Calibration.from_json(fitted.to_json())
+    assert back.k1 == fitted.k1 and np.allclose(back.to_pitch(seen), fitted.to_pitch(seen))

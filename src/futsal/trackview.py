@@ -237,7 +237,7 @@ def render(out_path: str, videos: dict[str, str], cals: dict, offsets: dict, ts:
 
 def run(videos: dict[str, str], cals: dict, offsets: dict[str, tuple[float, float]], start: float, duration: float,
         out_dir: str, detector_factory, court: Court, rate_hz: float = 10.0, fps_out: float = 10.0,
-        det_tag: str = "") -> dict:
+        det_tag: str = "", fuse_gate: float = 1.0) -> dict:
     os.makedirs(out_dir, exist_ok=True)
     dets = {}
     for cam, path in videos.items():
@@ -258,7 +258,7 @@ def run(videos: dict[str, str], cals: dict, offsets: dict[str, tuple[float, floa
         dets[cam] = d
     # reference clock for tracking: 0 = window start on cam1's clock
     sync = {cam: {"offset": offsets.get(cam, (0.0, 0.0))[0] - start, "drift": offsets.get(cam, (0.0, 0.0))[1]} for cam in videos}
-    ts = build_tracks(court, dets, cals, sync, fps_out=rate_hz)
+    ts = build_tracks(court, dets, cals, sync, fps_out=rate_hz, gate=fuse_gate)
     n = int(round(duration * rate_hz))
     for p in ts.players:                                   # clip to the window
         xy = np.full((n, 2), np.nan)
@@ -294,6 +294,8 @@ def main(argv=None):
     ap.add_argument("--model", default="yolo11s.pt"); ap.add_argument("--imgsz", type=int, default=1280)
     ap.add_argument("--conf", type=float, default=0.3); ap.add_argument("--rate", type=float, default=10.0, help="초당 검출 횟수")
     ap.add_argument("--auto-moves", action="store_true", help="카메라가 움직인 순간을 자동으로 찾아 보정 (futsal.camshift)")
+    ap.add_argument("--fuse-gate", type=float, default=1.0,
+                    help="두 카메라 위치가 이 거리(m) 안이면 같은 선수로 합침. 같은 선수가 두 ID로 갈리면 1.5~2로 키워 보기")
     ap.add_argument("--out", default="trackview")
     a = ap.parse_args(argv)
     if len(a.calib) != len(a.video):
@@ -308,7 +310,7 @@ def main(argv=None):
     offsets = {n: (o, d) for n, o, d in zip(names, offs, drifts)}
     res = run(videos, cals, offsets, a.start, a.duration, a.out,
               lambda cam: detect.yolo_detector(a.model, conf=a.conf, imgsz=a.imgsz), court, a.rate,
-              det_tag=f"{a.model}@{a.imgsz}/{a.conf}")
+              det_tag=f"{a.model}@{a.imgsz}/{a.conf}", fuse_gate=a.fuse_gate)
     print(f"\nID {res['ids']}개 (구간 절반 이상 보인 ID {res['ids_over_half']}개), "
           f"경기장 한가운데서 생기거나 끊긴 ID {res['events']}건")
     print(f"→ {os.path.join(a.out, 'trackview.mp4')}, {os.path.join(a.out, 'events.csv')}, {os.path.join(a.out, 'tracks.json')}")

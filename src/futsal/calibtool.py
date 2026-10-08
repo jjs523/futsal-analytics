@@ -6,8 +6,10 @@
   2) python -m futsal.calibtool fit calib/cam1/taps.json
      → calib/cam1/calib.json (보정값) + calib/cam1/check.jpg (코트 선을 영상 위에 겹쳐 그린 확인용 그림)
 
-방향 약속: 위에서 본 코트에서 cam1 폰이 왼쪽 아래 모서리, cam2 폰이 오른쪽 위 모서리입니다.
-두 폰 모두 "내 폰 바로 앞 모서리에서 골대가 있는 짧은 선은 화면 왼쪽으로, 긴 사이드라인은 화면 오른쪽으로" 뻗습니다.
+탭 화면의 코트 그림은 언제나 "내 폰"이 왼쪽 아래 모서리에 오도록 그려집니다 (cam1, cam2 모두).
+그림에서 내 폰 옆 짧은 선이 "내 쪽 골라인(골대 있는 선)", 아래 긴 선이 "내 쪽 사이드라인"입니다.
+cam2는 저장할 때 실제 코트 이름(180도 돌린 이름)으로 바뀌어, 두 카메라가 같은 코트 좌표를 씁니다.
+점 이름을 180도 뒤집어 찍어도 fit이 알아채고 바로잡습니다.
 """
 from __future__ import annotations
 
@@ -22,31 +24,46 @@ import numpy as np
 from .court import Court
 from .homography import Calibration, calibrate, framing
 
+# 탭 화면의 코트 그림은 언제나 "내 폰"이 왼쪽 아래에 오도록 돌려서 그립니다. 아래 설명도 그 그림 기준입니다.
+# (cam1은 그대로, cam2는 180도 돌린 그림 → 저장할 때 실제 코트 이름으로 바꿈)
 LABELS = {
-    "corner_bl": "왼쪽 아래 모서리 (cam1 쪽)", "corner_br": "오른쪽 아래 모서리", "corner_tr": "오른쪽 위 모서리 (cam2 쪽)",
-    "corner_tl": "왼쪽 위 모서리", "halfway_bottom": "하프라인 아래 끝", "halfway_top": "하프라인 위 끝", "centre": "센터 마크",
-    "circle_bottom": "센터서클 아래 끝", "circle_top": "센터서클 위 끝",
-    "penalty_left": "왼쪽 페널티 마크 (골라인에서 6m)", "second_penalty_left": "왼쪽 제2 페널티 마크 (10m)",
-    "area_goalline_top_left": "왼쪽 페널티 에어리어가 골라인과 만나는 위쪽 점",
-    "area_goalline_bottom_left": "왼쪽 페널티 에어리어가 골라인과 만나는 아래쪽 점",
-    "area_line_top_left": "왼쪽 페널티 에어리어 직선의 위쪽 끝", "area_line_bottom_left": "왼쪽 페널티 에어리어 직선의 아래쪽 끝",
-    "post_top_left": "왼쪽 골대 위쪽 기둥 바닥", "post_bottom_left": "왼쪽 골대 아래쪽 기둥 바닥",
-    "penalty_right": "오른쪽 페널티 마크 (6m)", "second_penalty_right": "오른쪽 제2 페널티 마크 (10m)",
-    "area_goalline_top_right": "오른쪽 페널티 에어리어가 골라인과 만나는 위쪽 점",
-    "area_goalline_bottom_right": "오른쪽 페널티 에어리어가 골라인과 만나는 아래쪽 점",
-    "area_line_top_right": "오른쪽 페널티 에어리어 직선의 위쪽 끝", "area_line_bottom_right": "오른쪽 페널티 에어리어 직선의 아래쪽 끝",
-    "post_top_right": "오른쪽 골대 위쪽 기둥 바닥", "post_bottom_right": "오른쪽 골대 아래쪽 기둥 바닥",
-    "sub_mark_0": "아래 사이드라인 교체 구역 표시 1", "sub_mark_1": "아래 사이드라인 교체 구역 표시 2",
-    "sub_mark_2": "아래 사이드라인 교체 구역 표시 3", "sub_mark_3": "아래 사이드라인 교체 구역 표시 4",
+    "corner_bl": "내 폰 바로 앞 모서리", "corner_br": "내 쪽 긴 사이드라인의 반대쪽 끝 모서리",
+    "corner_tr": "건너편 폰 쪽 모서리 (대각선 반대편)", "corner_tl": "내 쪽 골라인(골대 있는 짧은 선)의 반대쪽 끝 모서리",
+    "halfway_bottom": "하프라인이 내 쪽 사이드라인과 만나는 점", "halfway_top": "하프라인이 건너편 사이드라인과 만나는 점",
+    "centre": "센터 마크", "circle_bottom": "센터서클의 내 쪽 사이드라인 쪽 끝", "circle_top": "센터서클의 건너편 사이드라인 쪽 끝",
+    "penalty_left": "내 쪽 골대 앞 페널티 마크 (골라인에서 6m)", "second_penalty_left": "내 쪽 제2 페널티 마크 (10m)",
+    "area_goalline_top_left": "내 쪽 페널티 에어리어가 골라인과 만나는 점 (건너편 사이드라인 쪽)",
+    "area_goalline_bottom_left": "내 쪽 페널티 에어리어가 골라인과 만나는 점 (내 쪽 사이드라인 쪽)",
+    "area_line_top_left": "내 쪽 페널티 에어리어 직선 부분의 끝 (건너편 사이드라인 쪽)",
+    "area_line_bottom_left": "내 쪽 페널티 에어리어 직선 부분의 끝 (내 쪽 사이드라인 쪽)",
+    "post_top_left": "내 쪽 골대 기둥 바닥 (건너편 사이드라인 쪽)", "post_bottom_left": "내 쪽 골대 기둥 바닥 (내 쪽 사이드라인 쪽)",
+    "penalty_right": "건너편 골대 앞 페널티 마크 (6m)", "second_penalty_right": "건너편 제2 페널티 마크 (10m)",
+    "area_goalline_top_right": "건너편 페널티 에어리어가 골라인과 만나는 점 (건너편 사이드라인 쪽)",
+    "area_goalline_bottom_right": "건너편 페널티 에어리어가 골라인과 만나는 점 (내 쪽 사이드라인 쪽)",
+    "area_line_top_right": "건너편 페널티 에어리어 직선 부분의 끝 (건너편 사이드라인 쪽)",
+    "area_line_bottom_right": "건너편 페널티 에어리어 직선 부분의 끝 (내 쪽 사이드라인 쪽)",
+    "post_top_right": "건너편 골대 기둥 바닥 (건너편 사이드라인 쪽)", "post_bottom_right": "건너편 골대 기둥 바닥 (내 쪽 사이드라인 쪽)",
 }
 
-# 실제 구장에서 잘 보이는 점부터 (모서리·하프라인·센터서클·페널티 에어리어), 교체 구역 표시는 마지막
+# 실제 구장에서 잘 보이는 점부터. 교체 구역 표시는 구장마다 위치가 달라(규격과 1m 넘게 다르기도 함) 쓰지 않음
 ORDER = ["corner_bl", "corner_br", "corner_tr", "corner_tl", "halfway_bottom", "halfway_top", "centre", "circle_bottom",
          "circle_top", "area_goalline_top_left", "area_goalline_bottom_left", "area_line_top_left", "area_line_bottom_left",
          "penalty_left", "second_penalty_left", "post_top_left", "post_bottom_left",
          "area_goalline_top_right", "area_goalline_bottom_right", "area_line_top_right", "area_line_bottom_right",
-         "penalty_right", "second_penalty_right", "post_top_right", "post_bottom_right",
-         "sub_mark_0", "sub_mark_1", "sub_mark_2", "sub_mark_3"]
+         "penalty_right", "second_penalty_right", "post_top_right", "post_bottom_right"]
+
+# 어느 카메라가 어느 모서리에 있는지 (위에서 본 코트 기준). 그림을 돌리는 각도가 여기서 정해짐
+CORNER = {"cam1": "bl", "cam2": "tr"}
+
+
+def rotated_name(court: Court, name: str) -> str | None:
+    """The keypoint at the same spot after turning the court 180 degrees (corner_bl <-> corner_tr, ...)."""
+    kp = court.keypoints()
+    x, y = kp[name]
+    for n, (u, v) in kp.items():
+        if abs(u - (court.length - x)) < 1e-6 and abs(v - (court.width - y)) < 1e-6:
+            return n
+    return None
 
 
 def grab_frame(video: str, at_s: float) -> tuple[np.ndarray, float]:
@@ -69,10 +86,13 @@ def make_tap_page(video: str, at_s: float, out_dir: str, court: Court, camera: s
     cv2.imwrite(frame_path, frame, [cv2.IMWRITE_JPEG_QUALITY, 92])
     ok, jpg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 92])
     kp = court.keypoints()
+    flip = CORNER.get(camera, "bl") == "tr"
+    # drawn as if this phone stood at the bottom-left corner; saved under the real court name
     data = {
         "video": os.path.abspath(video), "at": round(t, 3), "camera": camera, "frame_path": frame_path,
         "width": int(frame.shape[1]), "height": int(frame.shape[0]), "court": [court.length, court.width],
-        "keypoints": [{"name": n, "label": LABELS.get(n, n), "xy": list(kp[n])} for n in ORDER if n in kp],
+        "keypoints": [{"name": rotated_name(court, n) if flip else n, "label": LABELS.get(n, n), "xy": list(kp[n])}
+                      for n in ORDER if n in kp],
         "markings": [m.tolist() for m in court.markings()],
     }
     html = _PAGE.replace("__DATA__", json.dumps(data, ensure_ascii=False)).replace(
@@ -88,11 +108,34 @@ def fit(taps_path: str, out_dir: str | None = None, frame_path: str | None = Non
         d = json.load(f)
     court = Court(*d["court"])
     taps = {k: tuple(v) for k, v in d["taps"].items()}
-    cal = calibrate(taps, court, ransac_px=8 if len(taps) >= 6 else None)
-    fr = framing(cal, d["width"], d["height"], court)
+    # The same taps read as if the court were turned 180 degrees: a classic mix-up (the far goal tapped as the
+    # near one). The court is symmetric, so both readings fit equally well; what differs is where the phone
+    # stands. The bottom-centre of the picture is the ground right in front of the phone, which must be near
+    # this camera's corner (cam1: bottom-left, cam2: top-right).
+    corner = {"bl": (0.0, 0.0), "tr": (court.length, court.width)}.get(CORNER.get(d.get("camera") or "", ""))
+    rot = {rotated_name(court, k): v for k, v in taps.items() if rotated_name(court, k)}
+    best = None
+    for cand, is_rot in ((taps, False), (rot, True)):
+        if len(cand) < 4:
+            continue
+        try:
+            c = calibrate(cand, court, ransac_px=8 if len(cand) >= 6 else None, image_size=(d["width"], d["height"]))
+        except ValueError:
+            continue
+        f = framing(c, d["width"], d["height"], court)
+        near = c.to_pitch([[d["width"] / 2, d["height"] * 0.98]])[0]
+        miss = float(np.hypot(*(near - corner))) if corner is not None and np.all(np.isfinite(near)) else 0.0
+        score = (miss, -f["visible"])
+        if best is None or score < best[0]:
+            best = (score, c, f, is_rot)
+    cal, fr, flipped = (best[1], best[2], best[3]) if best else (None, None, False)
+    if cal is None:
+        raise ValueError("기준점이 4개 미만이거나 보정을 만들 수 없습니다")
+    if flipped:
+        taps = rot
     out_dir = out_dir or os.path.dirname(os.path.abspath(taps_path))
     os.makedirs(out_dir, exist_ok=True)
-    res = cal.to_json() | {"taps": d["taps"], "at": d["at"], "width": d["width"], "height": d["height"],
+    res = cal.to_json() | {"taps": {k: list(v) for k, v in taps.items()}, "flipped_180": flipped, "at": d["at"], "width": d["width"], "height": d["height"],
                            "video": d.get("video"), "camera": d.get("camera"), "court": d["court"], "framing": fr}
     with open(os.path.join(out_dir, "calib.json"), "w", encoding="utf-8") as f:
         json.dump(res, f, ensure_ascii=False, indent=1)
@@ -139,8 +182,12 @@ def main(argv=None):
     else:
         r = fit(a.taps, a.out, a.frame)
         out = a.out or os.path.dirname(os.path.abspath(a.taps))
+        if r["flipped_180"]:
+            print("주의: 점 이름이 코트를 180도 돌린 것처럼 찍혀 있어서 자동으로 바로잡았습니다 (건너편 골대를 내 쪽으로 찍은 경우).")
         print(f"재투영 오차 {r['rms_px']:.1f}px (기준점 {len(r['used'])}개 사용"
               + (f", 빗나간 점 제외: {', '.join(r['rejected'])}" if r["rejected"] else "") + ")")
+        if r.get("k1"):
+            print(f"렌즈 왜곡 보정: k1 = {r['k1']:+.3f} (화면 가장자리 선이 휘는 것을 반영)")
         if r["rms_px"] > 5:
             print("주의: 오차가 큽니다. check.jpg에서 빨간 선이 코트 선과 어긋난 곳의 점을 다시 찍으세요.")
         fr = r["framing"]
@@ -212,7 +259,7 @@ function drawCourt(){
   g.strokeStyle = '#fff'; g.lineWidth = 1.2;
   D.markings.forEach(m=>{ g.beginPath(); m.forEach((q,i)=>{ const [x,y]=P(q[0],q[1]); i?g.lineTo(x,y):g.moveTo(x,y); }); g.stroke(); });
   const phone = (x,y,t)=>{ const [px,py]=P(x,y); g.fillStyle='#111'; g.fillRect(px-7,py-5,14,10); g.fillStyle='#fff'; g.font='10px system-ui'; g.fillText(t, px-12, py+(y>0?-8:18)); };
-  phone(-1.3,-1.3,'cam1'); phone(L+1.3, Wd+1.3,'cam2');
+  phone(-1.3,-1.3,'내 폰'); phone(L+1.3, Wd+1.3,'건너편 폰');
   D.keypoints.forEach((k,i)=>{ const [x,y]=P(k.xy[0],k.xy[1]); g.beginPath(); g.arc(x,y, i===cur?6:3, 0, 7);
     g.fillStyle = i===cur ? '#d92d20' : (taps[k.name] ? '#16a34a' : '#ffffffaa'); g.fill(); });
 }
