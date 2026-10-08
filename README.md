@@ -12,6 +12,7 @@
 |---|---|---|
 | `src/futsal/` | **분석 기준 구현**: FIFA 규격 코트, 카메라 모델, 기준점 보정, 두 카메라 병합, 지표, 시간 맞추기, 결과 포맷. 앱(Dart)으로 옮길 원본이자 정답 비교용 | ✅ 테스트 있음 |
 | `src/futsal/sim/` | 배치·화각 시뮬레이터, 합성 경기·합성 영상 | ✅ |
+| `src/futsal/camshift.py` | 촬영 중 카메라가 움직인 순간 자동 감지 → 시간 구간별 좌표 보정 | ✅ |
 | `src/futsal/check.py` | 촬영 영상 점검: `python -m futsal.check cam1.mp4 cam2.mp4` (프레임 간격, 밝기, 미리보기, 시간 차이) | ✅ |
 | `src/futsal/syncview.py` | 시간 맞추기 눈으로 확인: `python -m futsal.syncview cam1.mp4 cam2.mp4 --offset 124.29` (같은 순간 프레임 + 소리 겹쳐 그림) | ✅ |
 | `src/futsal/ball/` | 공 검출: 라벨링용 프레임 뽑기, 조각 학습 데이터, 공개 데이터 합치기, 학습, 조각 검출 + 궤적 정리 | ✅ 도구 완료, 학습 진행 중 |

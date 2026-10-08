@@ -13,7 +13,7 @@ import os
 import cv2
 import numpy as np
 
-from . import sync
+from . import camshift, sync
 
 
 def probe(path: str) -> dict:
@@ -87,7 +87,7 @@ def contact_sheet(path: str, out_jpg: str, n: int = 9, width: int = 640) -> list
     return stats
 
 
-def check(paths: list[str], out_dir: str, max_lag: float | None = None) -> dict:
+def check(paths: list[str], out_dir: str, max_lag: float | None = None, camera_moves: bool = True) -> dict:
     os.makedirs(out_dir, exist_ok=True)
     report = {"videos": []}
     for p in paths:
@@ -96,6 +96,9 @@ def check(paths: list[str], out_dir: str, max_lag: float | None = None) -> dict:
         info["timing"] = [frame_timing(p, t) for t in (0.0, max(dur / 2 - 10, 0), max(dur - 25, 0))]
         stem = os.path.splitext(os.path.basename(p))[0]
         info["samples"] = contact_sheet(p, os.path.join(out_dir, f"{stem}_sheet.jpg"))
+        if camera_moves:
+            print(f"  {info['file']}: 카메라가 움직였는지 훑는 중...")
+            info["camera_moves"] = camshift.camera_moves(p)["moves"]
         report["videos"].append(info)
         print(f"  {info['file']} 확인 끝")
     if len(paths) == 2:
@@ -130,6 +133,10 @@ def warnings(report: dict) -> list[str]:
                 w.append(f"{v['file']}: {t['at_s']}초 부근 프레임 간격이 불규칙함 ({t['irregular_pct']}%) → 가변 프레임, 시각 기준 처리 필요")
             if t.get("dropped", 0) > 0:
                 w.append(f"{v['file']}: {t['at_s']}초 부근 빠진 프레임 {t['dropped']}개 (최대 간격 {t['interval_ms_max']}ms)")
+        for m in v.get("camera_moves", []):
+            mm, ss = divmod(int(m["t"]), 60)
+            what = "기준점 다시 탭 필요" if m["retap"] else "자동 보정 (calibration timeline)"
+            w.append(f"{v['file']}: {mm}:{ss:02d}에 카메라가 움직임 (가로 {m['dx']:+.0f}px, 세로 {m['dy']:+.0f}px) → {what}")
         dark = [s for s in v["samples"] if s["brightness"] < 60]
         if dark:
             w.append(f"{v['file']}: 어두운 구간 {len(dark)}곳 (밝기 60 미만)")
@@ -160,6 +167,8 @@ def render(report: dict) -> str:
             else:
                 lines.append(f"- {t['at_s']}초 부근 프레임 간격: 실제 {t['measured_fps']}fps, 최대 {t['interval_ms_max']}ms, "
                              f"불규칙 {t['irregular_pct']}%, 빠짐 {t['dropped']}")
+        if "camera_moves" in v:
+            lines.append("- 카메라 움직임: " + ("; ".join(camshift.describe({"moves": v["camera_moves"]}))))
         lines.append("- 밝기/선명도: " + ", ".join(f"{s['t']} {s['brightness']:.0f}/{s['sharpness']:.0f}" for s in v["samples"]))
         lines.append("")
     s = report.get("sync")
@@ -183,9 +192,10 @@ def main(argv=None):
     ap.add_argument("videos", nargs="+", help="영상 1~2개 (두 개면 첫 번째가 기준)")
     ap.add_argument("--out", default="check_report")
     ap.add_argument("--max-lag", type=float, default=None, help="파일 이름 기준 차이에서 더 찾아볼 범위(초, 기본 5)")
+    ap.add_argument("--no-camera-moves", action="store_true", help="카메라 움직임 찾기 생략 (영상 전체를 훑어서 몇 분 걸림)")
     a = ap.parse_args(argv)
     print("점검 중... (긴 영상은 소리 읽기에 몇 분 걸립니다)")
-    report = check(a.videos, a.out, a.max_lag)
+    report = check(a.videos, a.out, a.max_lag, not a.no_camera_moves)
     print(render(report))
     print(f"→ {a.out}/report.txt 와 *_sheet.jpg 를 공유해 주세요")
 
