@@ -3,11 +3,15 @@
 Each detection keeps the foot point (bottom-centre of the box, in pixels), the box height and, every few
 frames, an appearance descriptor (colour histograms of the upper and lower body) used later to keep player
 IDs apart: bibs are the same within a team, but shorts / socks / skin usually are not.
+With an `embedder` (pipeline.reid.reid_embedder) every box also gets a ReID embedding and keeps its box, which the
+box-level tracker (pipeline.boxes) needs; embeddings are stored next to the JSON in a float16 .npy sidecar.
 """
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass
+import os
+import warnings
+from dataclasses import dataclass, field, fields
 from typing import Callable
 
 import cv2
@@ -16,6 +20,8 @@ import numpy as np
 # A detector takes a BGR frame and returns boxes [(x1, y1, x2, y2, confidence, team_or_None), ...]
 Box = tuple[float, float, float, float, float, "str | None"]
 Detector = Callable[[np.ndarray], list[Box]]
+# An embedder takes a BGR frame and (n, 4) boxes in that frame's pixels and returns (n, d) L2-normalised features
+Embedder = Callable[[np.ndarray, np.ndarray], np.ndarray]
 
 HUE_BINS = 12            # chromatic hue bins; plus black / grey / white bins for achromatic pixels
 FEAT_LEN = 2 * (HUE_BINS + 3)
@@ -31,6 +37,8 @@ class Detection:
     team: str | None = None
     h_px: float = 0.0     # box height in pixels
     feat: list[int] | None = None    # upper + lower body histograms, each scaled to sum 255 (see appearance())
+    box: tuple[float, float, float, float] | None = None   # x1, y1, x2, y2 in calibrated pixels (like u, v)
+    reid: np.ndarray | None = field(default=None, compare=False)   # (d,) ReID embedding, in the .reid.npy sidecar
 
 
 def _hist(hsv: np.ndarray) -> np.ndarray:
@@ -74,7 +82,7 @@ def dequantize(q) -> np.ndarray | None:
 def detect_video(path: str, detector: Detector, stride: int = 3, t0: float = 0.0, feat_every: int = 2,
                  scale: float = 1.0, min_feat_px: float = 24, max_aspect: float = 0.6,
                  rate_hz: float | None = None, start_s: float = 0.0, end_s: float | None = None,
-                 progress: bool = False) -> tuple[list[Detection], float, int]:
+                 progress: bool = False, embedder: Embedder | None = None) -> tuple[list[Detection], float, int]:
     """Run `detector` on every `stride`-th frame (appearance on every `feat_every`-th of those).
     `rate_hz` sets the stride from the video's frame rate instead (10 -> every 3rd frame at 30 fps, every 6th at 60),
     so two phones recording at different frame rates give detections at the same rate.
@@ -82,6 +90,7 @@ def detect_video(path: str, detector: Detector, stride: int = 3, t0: float = 0.0
     Appearance is skipped for boxes too small to have meaningful colours (< `min_feat_px` tall in the video)
     and for boxes wider than `max_aspect` x height, which usually hold two overlapping players.
     `scale` maps pixel coordinates back to the calibrated resolution (e.g. 2.0 if the video is half size).
+    With `embedder`, every box gets a ReID embedding (one embedder call per frame, on the video's own pixels).
     Returns detections, the video fps and its frame count."""
     cap = cv2.VideoCapture(path)
     if not cap.isOpened():
@@ -106,10 +115,16 @@ def detect_video(path: str, detector: Detector, stride: int = 3, t0: float = 0.0
             ms = cap.get(cv2.CAP_PROP_POS_MSEC)
             t = ms / 1000.0 if ms > 0 or (i == 0 and start_s <= 0) else start_s + i / fps
             with_feat = k % feat_every == 0
-            for x1, y1, x2, y2, c, team in detector(frame):
+            found = detector(frame)
+            emb = None
+            if embedder is not None and found:
+                emb = np.asarray(embedder(frame, np.array([b[:4] for b in found], float)), np.float32)
+            for j, (x1, y1, x2, y2, c, team) in enumerate(found):
                 good = with_feat and (y2 - y1) >= min_feat_px and (x2 - x1) <= max_aspect * (y2 - y1)
                 feat = quantize(appearance(frame, (x1, y1, x2, y2))) if good else None
-                out.append(Detection(i, t0 + t, (x1 + x2) / 2 * scale, y2 * scale, float(c), team, (y2 - y1) * scale, feat))
+                box = (float(x1) * scale, float(y1) * scale, float(x2) * scale, float(y2) * scale)
+                out.append(Detection(i, t0 + t, (x1 + x2) / 2 * scale, y2 * scale, float(c), team, (y2 - y1) * scale, feat,
+                                     box, None if emb is None else emb[j]))
             k += 1
             if progress and k % 200 == 0:
                 span = f"/{end_s - start_s:.0f}" if end_s is not None else ""
@@ -119,15 +134,57 @@ def detect_video(path: str, detector: Detector, stride: int = 3, t0: float = 0.0
     return out, float(fps), i
 
 
+def reid_path(path: str) -> str:
+    return path + ".reid.npy"
+
+
+def _to_json(d: Detection) -> dict:
+    out = {f.name: getattr(d, f.name) for f in fields(d) if f.name not in ("box", "reid")}
+    if d.box is not None:
+        out["box"] = [float(x) for x in d.box]
+    return out
+
+
 def save(dets: list[Detection], path: str, **meta) -> None:
+    """JSON as before (plus 'box' when known); ReID embeddings, if any, go to a float16 sidecar `<path>.reid.npy`
+    with one row per detection in order (NaN rows for detections without one), which keeps the JSON small."""
     with open(path, "w") as f:
-        json.dump({"meta": meta, "detections": [asdict(d) for d in dets]}, f, separators=(",", ":"))
+        json.dump({"meta": meta, "detections": [_to_json(d) for d in dets]}, f, separators=(",", ":"))
+    side = reid_path(path)
+    dims = {len(d.reid) for d in dets if d.reid is not None}
+    if not dims:
+        if os.path.exists(side):              # stale embeddings of an older run would be attached on load
+            os.remove(side)
+        return
+    if len(dims) > 1:
+        raise ValueError(f"ReID embeddings of different sizes: {sorted(dims)}")
+    E = np.full((len(dets), dims.pop()), np.nan, np.float16)
+    for i, d in enumerate(dets):
+        if d.reid is not None:
+            E[i] = d.reid
+    np.save(side, E)
 
 
 def load(path: str) -> tuple[list[Detection], dict]:
+    """Reads files written before boxes / embeddings were kept as well (box and reid are then None)."""
     with open(path) as f:
         d = json.load(f)
-    return [Detection(**x) for x in d["detections"]], d["meta"]
+    dets = []
+    for x in d["detections"]:
+        if x.get("box") is not None:
+            x["box"] = tuple(float(v) for v in x["box"])
+        dets.append(Detection(**x))
+    side = reid_path(path)
+    if os.path.exists(side):
+        E = np.load(side)
+        if E.ndim != 2 or len(E) != len(dets):
+            warnings.warn(f"{side}: shape {E.shape} does not match {len(dets)} detections, ignored")
+        else:
+            ok = np.isfinite(E).all(1)
+            for det, e, good in zip(dets, E, ok):
+                if good:
+                    det.reid = e.astype(np.float32)
+    return dets, d["meta"]
 
 
 def yolo_detector(model: str = "yolo11s.pt", conf: float = 0.3, imgsz: int = 1280, tiles: int = 1) -> Detector:

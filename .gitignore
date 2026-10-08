@@ -14,3 +14,14 @@ labeling/
 datasets/
 runs/
 sync_check/
+
+# local tracking runs and experiment data (large; regenerate with the scripts)
+calib/
+trackview*/
+*.pt
+experiments/cache/
+experiments/results/
+experiments/audit/
+experiments/videos/
+experiments/_*/
+

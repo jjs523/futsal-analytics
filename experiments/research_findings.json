@@ -1,0 +1,713 @@
+[
+ {
+  "technique": "Conservative unambiguous tracklets, then per-match self-supervised ReID fine-tuning, then constrained iterative merging (CEA 'Kalisteo' / TrackMerger v2, SoccerNet tracking winner in 2022 and 2023)",
+  "what_it_does": "Stage 1 builds short, high-precision tracklets: two Hungarian passes (IoU first, then box-centre distance up to 30 px), Kalman with camera-motion compensation. Any tracklet is cut as soon as its box overlaps another track's box (IoU>0.7 in the 2023 version, >0.5 in the 2022 rugby version), and crops from ambiguous frames are kept out of training. Stage 2 fine-tunes a ReID net (MGN ResNet-50) on each test video with no labels. It runs 10 epochs of AdamW at lr 1e-4 with batch-hard triplet loss. Positives are 8 other crops from the same tracklet; negatives are 8 crops from tracklets that co-occur in the same frames, since one person cannot be in two places. Stage 3 averages 20 crop embeddings per tracklet and repeatedly merges the closest pair until distance exceeds r_max. Two merges are never allowed: tracklets that overlap in time (no duplication), and end-to-start jumps that are physically implausible (no teleportation).",
+  "evidence": "SoccerNet 2023 tracking challenge, 1st place: HOTA 75.61, DetA 75.38, AssA 75.94. 2nd (MTIOT) had 69.54 / 75.18 / 64.45, so DetA was the same and the gap was +11.5 AssA, a pure association win. Sensors 2023 paper, SoccerNet test with oracle detections: HOTA 96.57 / AssA 93.60 / IDF1 96.16 vs C-BIoU 89.2 / 80.0 / 86.1. With its own YOLOX: 73.29 / 73.42 / 90.12 vs BoT-SORT 61.12 / 57.16 / 77.92. SportsMOT val: HOTA 86.04, IDF1 95.33. Ablation (oracle dets): removing the teleport check costs 0.85 HOTA and 1.68 AssA; removing per-video ReID fine-tuning costs 0.45 HOTA, 0.62 AssA and 0.69 IDF1; removing CMC costs 1.14 HOTA. The 2023 3rd place (MOT4MOT, 66.27 HOTA) likewise added appearance-based merging specifically for tracks that start or end far from the image boundary.",
+  "applicability": "This is closest to our current design (break-when-ambiguous tracklets plus offline relinking). What we lack is the following. (a) Replace colour histograms with an OSNet (osnet_ain_x1_0_msmt17 via torchreid inside boxmot) fine-tuned on this match's own tracklets. Because negatives include teammates visible in the same frame, the net is forced to learn within-team cues such as shorts, socks, shoes, hair, skin and build, which a bib-dominated histogram cannot capture. (b) Add a hard cannot-link for any temporal overlap, in either camera. (c) Do teleport gating in metres on the pitch (|dpos| <= v_max*dt + ~1 m, with v_max about 8 m/s) instead of 10 px in the image. (d) Every mid-pitch death must be explained by a mid-pitch birth, which directly targets the 52 mid-pitch births/deaths. Scale is small: 3 min x 10 Hz x ~8 people x 2 cams is about 29k crops, so 10 epochs takes minutes on an RTX 2070S. Train only on crops at least ~50-60 px tall, and use cam1 crops for players on cam2's far side.",
+  "expected_gain": "high",
+  "effort": "medium",
+  "code": "No official code was released by CEA. A reimplementation is about 200-300 lines: torchreid triplet fine-tuning (torchreid is already a boxmot dependency) plus a constrained greedy agglomeration in numpy/scipy. It needs no external labels or training data.",
+  "sources": [
+   "https://arxiv.org/abs/2309.06006",
+   "https://pmc.ncbi.nlm.nih.gov/articles/PMC10534887/",
+   "https://www.mdpi.com/1424-8220/23/18/7938",
+   "https://arxiv.org/abs/2204.04049",
+   "https://arxiv.org/abs/2308.16651"
+  ],
+  "angle": "sports-mot"
+ },
+ {
+  "technique": "Team (bib colour) as a hard association constraint, with tracklet-level team voting and team-flip splitting (SoccerNet GSR 2024 and 2025 winners)",
+  "what_it_does": "Each detection gets a team label, and labels are majority-voted per tracklet. A tracklet whose label flips persistently is split, because the flip usually means a swap with an opponent. Cross-team pairs are made impossible both in frame-to-frame matching and in offline merging, and the number of concurrent IDs per team is capped.",
+  "evidence": "GSR 2024 winner Constructor.tech ran DeepSORT in pitch coordinates. Association was restricted by TeamID (an OSNet team model) and by player orientation. Tracklets were then concatenated using start/end times, ReID, TeamID, jersey number and speed. Result: GS-HOTA 63.81 and GS-AssA 82.23 vs 43.15 and 61.16 for 2nd. The authors claim about 90% fewer tracklets after post-processing, but report no ablation table. GSR 2025 winner KIST (GS-HOTA 63.90) used Deep-EIoU plus OSNet, then split tracklets on identity-prediction inconsistency and merged by ReID only under spatio-temporal plus team/jersey constraints, with majority voting within tracklets. TeamTrack (2024) found that appearance features separate opposing teams, but features of players in the same team are 'highly entangled'. In other words, appearance is reliable mainly for the team split. SportsSUSHI also adds team-ID edge features.",
+  "applicability": "Our bibs make this cheaper and more reliable than SoccerNet's colour clustering. Per detection, take the yellow-pixel ratio in the torso band (about 20-55% of box height), with HSV hue around 20-35 deg and high S/V. Vote per tracklet, giving more weight to the higher-resolution camera. Define the other team as 'not yellow' rather than as a colour cluster, because they wear mixed dark clothes. Treat goalkeepers as separate classes. Then: (1) set cost to infinity for cross-team pairs in both fusion and relinking; (2) split a tracklet when N or more consecutive samples vote the other team with a clear margin; (3) allow at most 5 concurrent on-court IDs per team, plus slack while a flying substitution is in progress near the bench zone. This roughly halves the candidate set for every relink decision.",
+  "expected_gain": "high",
+  "effort": "low",
+  "code": "No external code is needed: OpenCV HSV thresholds plus voting logic. The KIST code (github.com/yinmayoo185/SoccernetGSR, IDATR refinement) shows a reference split/merge. Constructor.tech's code is not released.",
+  "sources": [
+   "https://arxiv.org/abs/2409.10587",
+   "https://arxiv.org/abs/2504.06357",
+   "https://arxiv.org/abs/2508.19182",
+   "https://github.com/yinmayoo185/SoccernetGSR",
+   "https://arxiv.org/abs/2404.13868",
+   "https://arxiv.org/abs/2502.21242"
+  ],
+  "angle": "sports-mot"
+ },
+ {
+  "technique": "GTA-Link (Global Tracklet Association): offline tracklet splitter plus connector that plugs into any tracker",
+  "what_it_does": "The splitter runs DBSCAN with cosine distance on the per-box ReID embeddings of each tracklet (paper: eps 0.6, min_samples 5, at most 3 clusters; outliers are assigned to the nearest cluster). It splits tracklets that contain more than one identity. The connector defines tracklet distance as the mean pairwise cosine distance between box embeddings. That distance is set to 1 if the tracklets overlap in time, or if the end-to-start gap exceeds a spatial threshold (beta x the largest box displacement in the video). It then merges hierarchically until the closest pair is above 0.4.",
+  "evidence": "ACCV-W 2024 paper. SportsMOT: Deep-EIoU goes from 77.21 to 81.04 HOTA, AssA 67.63 to 74.51, IDF1 79.81 to 86.51. ByteTrack goes from 63.46 to 69.74 HOTA, AssA 51.81 to 62.61, IDF1 70.76 to 83.16. SoccerNet: Deep-EIoU goes from 79.41 to 83.11 HOTA, AssA 71.55 to 78.38. The connector supplies most of the gain; the splitter adds a further 0.4-1.9 AssA (up to +1.9 on SoccerNet). In the 2025 GSR, GTA was used by 4th place (Playbox: BoT-SORT + GTA + CLIP-ReID, GS-AssA 84.36) and 8th place. GTATrack won SoccerTrack 2025, which uses static fisheye full-pitch video. There, ByteTrack scored HOTA 0.42 / AssA 0.26, Deep-EIoU 0.54 / 0.38, and Deep-EIoU + GTA 0.60 / 0.47, cutting 53 tracklets to 27. McByte++ plus GTA gains +1.6 HOTA and +2.4 IDF1 on the SportsMOT test set.",
+  "applicability": "It can run directly on per-camera tracklets exported as MOT txt. Three changes are needed. Replace the image-space spatial constraint with the pitch-metre speed gate. Add the team cannot-link. Add a cross-camera cannot-link so tracklets visible at the same time in either camera cannot merge. Use its SportsMOT-trained OSNet checkpoint (sports_model.pth.tar-60) instead of the MSMT17 pedestrian weights. Two caveats. On the static wide-angle SoccerTrack data, AssA still only reached 0.47, because tiny players give weak embeddings; our cam2 far-side players are 30-80 px, so use cam1 crops for them. The splitter skips tracklets shorter than min_len (repo default 100 frames, which is 10 s at 10 Hz), so lower min_len or run tracking at 30 fps.",
+  "expected_gain": "high",
+  "effort": "low",
+  "code": "github.com/sjc042/gta-link: generate_tracklets.py then refine_tracklets.py, with flags --use_split, --use_connect, --eps, --min_samples, --merge_dist_thres, --spatial_factor. Needs Python 3.8 and torchreid 1.4 (tested on torch 2.3 / CUDA 11.8), so expect porting work for Python 3.14. No training needed.",
+  "sources": [
+   "https://arxiv.org/abs/2411.08216",
+   "https://github.com/sjc042/gta-link",
+   "https://arxiv.org/abs/2602.00484",
+   "https://arxiv.org/abs/2508.19182",
+   "https://arxiv.org/abs/2608.15688"
+  ],
+  "angle": "sports-mot"
+ },
+ {
+  "technique": "Pitch-plane metric cues (position and speed gating) in association, with camera fusion done at tracklet level rather than per frame",
+  "what_it_does": "Detections are mapped to pitch metres through the homography (foot point). Physically impossible links are vetoed, and metric distance enters the association cost alongside appearance. Constructor ran its Kalman tracker itself in pitch coordinates, while SportsSUSHI adds |delta field position| as an edge feature in a tracklet graph.",
+  "evidence": "SportsSUSHI (WACV-W 2025), SoccerNet test with fine-tuned ReID. SUSHI baseline: 85.37 HOTA / 79.36 AssA. Adding field position: 89.22 / 84.25 (+3.9 / +4.9). Adding jersey on top: 89.78 / 85.35. The Kalisteo teleport check adds 0.85 HOTA and 1.68 AssA. Constructor's pitch-space DeepSORT had the best 2024 GS-AssA (82.23). One counterpoint from general MOT: ground-plane-only association can lose to image IoU at higher frame rates because projection noise dominates, which is why hybrid IoU plus ground-plane designs are common (e.g., IMM-JHSE, 2409.02562).",
+  "applicability": "We already have homographies (~3 px reprojection error) and synced cameras. The likely structural cause of many swaps is our order of operations: fusing cameras per frame with greedy distance matching before tracking. Any fusion error, such as two close players merged or one player duplicated by edge distortion, becomes an ID swap or birth. A suggested order follows; this is my inference from the results above, not something a paper tested in this exact setup. (1) Track each camera independently in image space at native fps, with conservative tracklets. (2) Associate cam1 and cam2 tracklets over their overlapping time window by median pitch distance plus team, which is robust to per-frame homography error. (3) Do long-range relinking on the fused tracklets with metre-based gates: futsal sprints up to about 8 m/s, plus ~0.5-1 m tolerance at far or edge regions. Undistort foot points before applying the homography near frame edges.",
+  "expected_gain": "high",
+  "effort": "medium",
+  "code": "The gating and cross-view tracklet matching are our own code and need no training. SportsSUSHI code is at github.com/mkoshkina/sports-SUSHI, but its GNN needs labelled training.",
+  "sources": [
+   "https://arxiv.org/abs/2502.21242",
+   "https://pmc.ncbi.nlm.nih.gov/articles/PMC10534887/",
+   "https://arxiv.org/abs/2504.06357",
+   "https://arxiv.org/abs/2409.02562"
+  ],
+  "angle": "sports-mot"
+ },
+ {
+  "technique": "Closed-set identity assignment using the known roster (10 players plus substitutes), with a few human anchors (Kalisteo 2022 few-annotation tracking)",
+  "what_it_does": "The final step stops being open-set clustering ('how many IDs are there?'). Instead, each tracklet is assigned to one of K known identities or to 'other'. Two constraints hold: exclusivity (an identity cannot occupy two tracklets at the same time) and team. Maglo et al. bootstrap this with about 3-6 short human-labelled tracklets per player and a Transformer tracklet classifier on frozen ReID features. Assignment repeatedly takes the highest-scoring tracklet-to-identity pair and accepts it only if that identity is free in those frames.",
+  "evidence": "CVPR-W 2022 (arXiv 2204.04049), rugby sevens: average IDF1 +26 over ByteTrack (76.8 / 84.3 / 82.2 vs 48.8 / 54.9 / 60.3 on 3 clips). Gains flatten after about 3.5 annotations per player. Each annotation takes about 0.8 s and training with frozen ReID takes 28 s. The greedy exclusive assignment produced fewer wrong identities than RNMF (about 1 IDF1 point better, about 25 fewer ID switches). GSR-9 in 2025 also used a uniqueness bound (at most 24 identities) for matching. Min-cost flow can force exactly N trajectories (patent US 9875550).",
+  "applicability": "The target output is about 10 persistent IDs, not 49. A 1-2 minute labelling step in trackview (click each player in ~4-5 places and name them) turns the fragments into exactly 10 labels. The same clicks also produce the evaluation ground truth we lack, so IDF1/HOTA can be measured on that clip. Fully automatic variant: stop the constrained agglomeration at 5 IDs per team per time window (allowing flying substitutions at the bench zone), then solve tracklet-to-identity assignment per window with the Hungarian algorithm plus the exclusivity check.",
+  "expected_gain": "high",
+  "effort": "medium",
+  "code": "No public code for the 2022 Transformer classifier. A simpler version is about 100 lines: mean OSNet embedding per tracklet, kNN or logistic regression against the labelled anchors, then exclusive greedy assignment.",
+  "sources": [
+   "https://arxiv.org/abs/2204.04049",
+   "https://arxiv.org/abs/2508.19182"
+  ],
+  "angle": "sports-mot"
+ },
+ {
+  "technique": "Deep-EIoU-style online association: no motion model, iterative expansion IoU plus gated appearance, run per camera at native frame rate",
+  "what_it_does": "It drops the Kalman filter because sports motion is non-linear. Boxes are expanded by a factor of (2E+1), with E stepped 0.7, 0.8, 0.9, so nearby fast movers still match even without overlap. Stage 1 cost is min(gated appearance, EIoU distance), where gated appearance is 0.5 x (1 - cos) and is vetoed if the cosine distance exceeds 0.25 or the EIoU distance exceeds 0.5. Stage 2 is ByteTrack-style: high-confidence detections are above 0.6, low-confidence ones (0.1-0.6) are matched by EIoU only. Track buffer is 60, followed by linear interpolation.",
+  "evidence": "WACV-W 2024: SportsMOT test 77.2 HOTA, 67.7 AssA, 79.8 IDF1; SoccerNet 85.4 HOTA. Ablation: EIoU only 71.40, plus ReID 75.27 (+3.86), plus iterative scale-up 77.21 (+1.94), plus interpolation 77.22. It was the tracker of the 2025 GSR winner (KIST). In GTATrack (SoccerTrack 2025, static full-pitch), switching from ByteTrack to Deep-EIoU raised AssA from 0.26 to 0.38 and HOTA from 0.42 to 0.54. Alternative: GSR-3 2025, which had the highest GS-AssA (85.33), instead fed Farneback optical flow into the Kalman prediction to handle abrupt movements.",
+  "applicability": "Fast direction changes break our constant-velocity greedy motion. At 10 Hz, a sprinting far-side player (box ~15-30 px wide) moves most of a box width between samples, so IoU-type cues collapse. Run detection at 30 fps on both cameras for the tracking stage; offline that is about 5.4k frames per camera for 3 minutes, cheap on an RTX 2070S. Keep 10 Hz only for downstream analytics. Deep-EIoU is not in boxmot 12. Its tracker is a ~300-line ByteTrack fork, so port it, or approximate it with boxmot BoT-SORT/HybridSort using enlarged IoU. Pair it with the sports OSNet checkpoint.",
+  "expected_gain": "medium",
+  "effort": "low",
+  "code": "github.com/hsiangwei0903/Deep-EIoU: YOLOX checkpoint plus sports_model.pth.tar-60 OSNet from its Google Drive; run tools/demo.py --path <video>. No training needed if we feed our own detections into the tracker.",
+  "sources": [
+   "https://arxiv.org/abs/2306.13074",
+   "https://github.com/hsiangwei0903/Deep-EIoU",
+   "https://arxiv.org/abs/2602.00484",
+   "https://arxiv.org/abs/2508.19182"
+  ],
+  "angle": "sports-mot"
+ },
+ {
+  "technique": "Sports-domain or CLIP-based ReID embeddings aggregated at tracklet level, replacing colour histograms and pedestrian-trained OSNet",
+  "what_it_does": "Uses appearance models trained on athletes (OSNet fine-tuned on SportsMOT, CLIP-ReID / CLIP-ReIdent, PRTReid) and aggregates many crops per tracklet, either as the mean of L2-normalised features or through a small Transformer, before linking.",
+  "evidence": "The SoccerNet 2025 report says CLIP- and OSNet-based features 'emerged as a strong approach'. GSR-3 (CLIP-ReIdent + 6-layer Transformer tracklet aggregation + optical-flow-aided Kalman) had the best GS-AssA, 85.33. GSR-4 (BoT-SORT + GTA + CLIP-ReID) had 84.36, against 79.55 for the overall winner. CAMELTrack ablation on SportsMOT val: appearance-only temporal encoding reaches 79.2 HOTA / 84.7 IDF1, vs 72.1 / 72.6 for the Kalman box cue, so appearance dominates association there. CLIP-ReIdent won MMSports 2022 player ReID (98.44 mAP) and SoccerNet ReID 2023. The online ReID memory in McByte++ adds +4.1 HOTA and +7.6 IDF1 on SportsMOT. Caveat from TeamTrack: within-team embeddings remain entangled.",
+  "applicability": "Run a quick A/B of osnet_ain_x1_0_msmt17, sports_model.pth.tar-60 and boxmot's clip_market1501.pt. Without ground truth, compare them on a proxy: how well each separates same-tracklet crop pairs from co-occurring-tracklet crop pairs (AUC). Combine the winner with the per-match fine-tuning from the first finding. Use only crops at least ~50-60 px tall. For small far-side players in cam2, borrow cam1 crops of the same fused track.",
+  "expected_gain": "medium",
+  "effort": "low",
+  "code": "boxmot ReID zoo: clip_market1501.pt is auto-downloaded and heavy (~300 MB). Sports OSNet comes from the GTA-link/Deep-EIoU Google Drive. CLIP-ReIdent has no official released weights.",
+  "sources": [
+   "https://arxiv.org/abs/2508.19182",
+   "https://arxiv.org/abs/2505.01257",
+   "https://arxiv.org/abs/2303.11855",
+   "https://pypi.org/project/boxmot",
+   "https://arxiv.org/abs/2404.13868",
+   "https://arxiv.org/abs/2608.15688"
+  ],
+  "angle": "sports-mot"
+ },
+ {
+  "technique": "McByte / McByte++: temporally propagated segmentation masks as an association cue (training-free)",
+  "what_it_does": "Each tracklet gets a mask, initialised with SAM and propagated with Cutie (McByte) or EdgeTAM (McByte++). The mask lowers the IoU cost of a tracklet-detection pair only in ambiguous or isolated cases, and only when mask confidence, fill and coverage checks pass. McByte++ also adds conditional camera-motion compensation and an online OSNet ReID memory. That memory reconnects newly started tracklets to terminated ones when cosine similarity is at least 0.8 and the match is mutual best.",
+  "evidence": "CVPR-W 2025 (arXiv 2506.01373). SportsMOT val: HOTA 83.9 vs 69.0 for the ByteTrack baseline. SportsMOT test: 76.9 HOTA / 77.5 IDF1. SoccerNet-2022: 85.0 / 79.9. DanceTrack ablation: using the mask only for ambiguity, plus the confidence and coverage checks, is what lifts HOTA from 47.1 to 62.3. Speed is 3-5 FPS on an A100. McByte++ (arXiv 2608.15688, Aug 2026): SportsMOT test 79.9 HOTA / 83.6 IDF1 online, 81.5 / 86.0 with GTA. SoccerNet-2022: 88.6 / 87.2. It is about 10x faster, at 12-19 FPS.",
+  "applicability": "Masks persist through partial occlusion during crossings, which is our main failure mode, and our static cameras make CMC unnecessary. Risks: far-side 30-80 px players give poor masks. The EdgeTAM version loads all frames at once, so on 8 GB VRAM we would need to downscale and split the 3-minute clip into chunks. The install is Linux-oriented. Treat this as a phase-2 experiment after the first five findings are in place.",
+  "expected_gain": "medium",
+  "effort": "medium",
+  "code": "github.com/tstanczyk95/McByte (MIT) and github.com/tstanczyk95/McBytePlusPlus (Apache-2.0). Both accept precomputed detections via --det_path. No training needed.",
+  "sources": [
+   "https://arxiv.org/abs/2506.01373",
+   "https://arxiv.org/abs/2608.15688",
+   "https://github.com/tstanczyk95/McByte",
+   "https://github.com/tstanczyk95/McBytePlusPlus"
+  ],
+  "angle": "sports-mot"
+ },
+ {
+  "technique": "Learned association (CAMELTrack, SportsSUSHI), for later once labels exist",
+  "what_it_does": "CAMELTrack learns how to fuse association cues (appearance, box, keypoints) with two transformer modules trained on precomputed detections and features. SportsSUSHI is a hierarchical GNN over tracklets with field-position, team and jersey edge features, solved with a linear program.",
+  "evidence": "CAMELTrack (arXiv 2505.01257), SportsMOT test: 80.4 HOTA / 72.8 AssA / 84.8 IDF1, vs Deep-EIoU 77.2 / 67.7 / 79.8 and MixSort 74.1 / 62.0 / 74.4. It trains in about 1 h on one consumer GPU. Keypoints did not help on SportsMOT because of distant views. SportsSUSHI: the field-position feature alone adds +3.9 HOTA. Both need labelled tracks from the target domain. For reference, the best SportsMOT figure we found is MeMoSORT's 82.1 HOTA (2025 preprint).",
+  "applicability": "Not usable now because we have no ground truth. Once the labelling step from the closed-set finding produces a few labelled matches, CAMEL could be trained on our own two-camera tracklets via TrackLab, or started from SportsMOT weights and fine-tuned.",
+  "expected_gain": "low",
+  "effort": "high",
+  "code": "CAMELTrack is on GitHub under the TrackingLaboratory organization (TrackLab-based, weights reported as released). SportsSUSHI: github.com/mkoshkina/sports-SUSHI. Both require training.",
+  "sources": [
+   "https://arxiv.org/abs/2505.01257",
+   "https://arxiv.org/abs/2502.21242",
+   "https://arxiv.org/abs/2508.09796"
+  ],
+  "angle": "sports-mot"
+ },
+ {
+  "technique": "TrackLab / sn-gamestate baseline and MixSort: reference implementations, low priority to adopt wholesale",
+  "what_it_does": "sn-gamestate is the modular TrackLab GSR baseline: YOLOv11 detection, PRTReid/BPBReID appearance, a StrongSORT-style tracker, TVCalib/PnLCalib/NBJW calibration, and team/jersey/role heads with tracklet-level aggregation. MixSort adds a MixFormer-like appearance association branch to ByteTrack or OC-SORT.",
+  "evidence": "The baseline scored GS-HOTA 29.01, against about 63.9 for the 2025 winners. Top teams replaced or extended its tracker with Deep-EIoU, BoT-SORT plus GTA, or custom pitch-space post-processing. MixSort gains are small on SportsMOT test: ByteTrack 64.1 to 65.7 HOTA (AssA 52.3 to 54.8), and OC-SORT 73.7 to 74.1 (AssA 61.5 to 62.0).",
+  "applicability": "sn-gamestate assumes a moving broadcast camera and needs Python 3.9 with mmcv 2.0.1, set up for Linux. Making that work on Windows with Python 3.14 is not worth it. Take components instead: the tracklet majority-voting logic, the GTA plugin and the PRTReid weights. MixSort's gain is below every option above.",
+  "expected_gain": "low",
+  "effort": "high",
+  "code": "github.com/SoccerNet/sn-gamestate (uv venv --python 3.9; run with 'uv run tracklab -cn soccernet'). github.com/MCG-NJU/MixSort (Python 3.8, torch 1.12, pretrained weights on Google Drive).",
+  "sources": [
+   "https://github.com/SoccerNet/sn-gamestate",
+   "https://arxiv.org/abs/2508.19182",
+   "https://github.com/MCG-NJU/MixSort",
+   "https://arxiv.org/abs/2304.05170"
+  ],
+  "angle": "sports-mot"
+ },
+ {
+  "technique": "Answer to the (a)/(b)/(c) question: use (c), a hybrid built on (b). Track each camera in image space, pair tracklets across cameras on the pitch, then solve identities globally offline (an LMGP-style pipeline without the learned parts)",
+  "what_it_does": "1) Build short tracklets in each camera that each contain only one person. 2) Project every box to the pitch. 3) Pair cam1 and cam2 tracklets using their distance over all frames where both exist; where a tracklet's partner in the other camera changes, cut it, because that marks an ID swap. 4) Link the fused tracklets over gaps of up to about 10 s with a global solver that uses temporal and cross-view edges. Per-frame fusion is kept only to compute the final position once identities are fixed.",
+  "evidence": "LMGP (Nguyen et al., CVPR 2022), WILDTRACK: IDF1 98.2, MOTA 97.1, 12 ID switches. Caveat: it used ground-truth boxes, so the TrackTacular authors call it not comparable. Its ablation: without geometric cross-view pre-clustering IDF1 falls to 79.4, without tracklet splitting 92.4, without cross-camera edges 94.1, without long-range edges 96.4. AI City 2023 Track 1 winner (Huang et al., CVPRW 2023): per-camera BoT-SORT with pretrained OSNet, anchor clustering, then homography-based spatio-temporal ID reassignment, IDF1 92.98 -> 95.36. AI City 2024 Track 1: the best offline entry (Yachiyo/RIIPS, per-camera tracklets plus clustering) scored HOTA 71.94 against 67.22 for the best online entry, before the online bonus. On-the-fly homography paper (arXiv 2609.18582, Sep 2026): it feeds smoothed single-view states into the bird's-eye-view stage because a few pixels of vertical jitter cause large ground-plane jumps.",
+  "applicability": "The current approach (a), greedy per-frame distance fusion, is the weak link. For a low corner camera, far-side foot points are wrong by metres in depth (see the next finding). A fixed distance gate therefore sometimes merges two players and sometimes duplicates one, which produces the 52 mid-pitch births and deaths. In each image, crossing players stay apart sideways, and box overlap plus appearance at 30 fps is reliable. Matching a whole tracklet across cameras averages the noise over 30 or more frames. With two cameras, LMGP's lifted multicut reduces to: (i) a Hungarian match between cam1 and cam2 tracklets on the median Mahalanobis distance over their shared frames, requiring at least 1 s of overlap, the same team label, and mutual best match; (ii) cut a tracklet where its partner changes; (iii) a temporal linking step limited to K identities (see the known-player-count finding). Single-camera stretches (one camera occluded) stay as single-view tracklets that can still be linked.",
+  "expected_gain": "high",
+  "effort": "medium",
+  "code": "LMGP: no public code found, and it uses trained CenterTrack, DG-Net and small MLPs; replace them with hand-written costs. Training-free references: github.com/ipl-uw/AIC23_Track1_UWIPL_ETRI and github.com/nota-github/AIC2024_Track1_Nota. Feasible as about 500 lines of numpy/scipy (linear_sum_assignment, milp) on the existing ultralytics/boxmot output. No training needed.",
+  "sources": [
+   "https://arxiv.org/abs/2111.11892",
+   "https://arxiv.org/html/2111.11892v3",
+   "https://ar5iv.labs.arxiv.org/html/2304.09471",
+   "https://arxiv.org/html/2404.09432v1",
+   "https://openaccess.thecvf.com/content/CVPR2024W/AICity/html/Yoshida_Overlap_Suppression_Clustering__for_Offline_Multi-Camera_People_Tracking_CVPRW_2024_paper.html",
+   "https://arxiv.org/html/2609.18582v1"
+  ],
+  "angle": "multicam"
+ },
+ {
+  "technique": "Uncertainty-aware pitch projection: undistort points, take the foot point from ankle keypoints, carry the image noise through the homography as a covariance, then gate with Mahalanobis distance and fuse by inverse-covariance weighting (UCMCTrack's measurement model)",
+  "what_it_does": "Each foot point gets a 2x2 pitch covariance R = C·diag((σm·w)², (σm·h)²)·Cᵀ, where C is the Jacobian of the homography at that pixel. Matching uses the Mahalanobis distance d = εᵀS⁻¹ε + ln|S| instead of a fixed distance in metres. The two cameras' positions are combined weighted by their inverse covariances, so the near camera dominates automatically.",
+  "evidence": "UCMCTrack (AAAI 2024), DanceTrack validation IDF1: IoU baseline 47.27; Mahalanobis without the propagated covariance 43.76; with it 53.93; plus process-noise compensation 62.64. It is motion-only and reaches MOT17 test HOTA 65.8. Szulc & Iwanowski (arXiv 2604.10805, 2026): homography distance error grows roughly with the square of distance from the camera. AI City 2023 winner: foot point = midpoint of both ankles when keypoint confidence is high, otherwise the box bottom. Top-3 AI City 2024 teams all used HRNet foot keypoints.",
+  "applicability": "Illustrative numbers (assumed: phone height h ≈ 2 m, f ≈ 1400 px at 1080p): ground error along the camera ray is about D²/(f·h) per image pixel, i.e. 0.04 m/px at 10 m, 0.14 at 20 m, 0.57 at 40 m and about 0.7 at the far corner. Across the ray it is only about D/f ≈ 0.03 m/px at 40 m, so the error ellipses are about 20:1. Your 3 px reprojection error, or 2-5 px of box-bottom jitter on a 30-80 px far player, becomes 1-3 m of depth error. Diagonal geometry: for players near the pitch diagonal, the two cameras look along nearly the same line from opposite ends. Their long error axes then line up, so fusion cannot pin down depth and only weighting toward the nearer camera helps; off the diagonal the rays cross at up to 90°. Steps: cv2.undistortPoints (fit k1, k2 on pitch lines); ankles from ultralytics yolo pose with conf > 0.5, else box bottom; finite-difference Jacobian of H; σ_v ≈ 0.05·h_box, σ_u ≈ 0.03·w_box; χ²(2) 99% gate = 9.21; also add a term for homography uncertainty. Mounting the phones higher (2 m -> 4 m) halves the depth error.",
+  "expected_gain": "high",
+  "effort": "low",
+  "code": "github.com/corfyi/UCMCTrack (MIT; takes camera parameters, but only its covariance formula is needed). Otherwise about 50 lines of numpy/cv2. No training.",
+  "sources": [
+   "https://arxiv.org/html/2312.08952v2",
+   "https://github.com/corfyi/UCMCTrack",
+   "https://arxiv.org/abs/2604.10805",
+   "https://ar5iv.labs.arxiv.org/html/2304.09471",
+   "https://arxiv.org/html/2404.09432v1"
+  ],
+  "angle": "multicam"
+ },
+ {
+  "technique": "Track each camera at its native frame rate with a sports-tuned tracker that uses ReID (Deep-EIoU style, or boxmot BoT-SORT / HybridSORT with ReID and camera-motion compensation off)",
+  "what_it_does": "Image-space association uses enlarged-box IoU (Deep-EIoU drops the Kalman motion model, which fails on sharp direction changes) plus OSNet appearance, with a long lost-track buffer. Thresholds are set conservatively so a tracklet ends rather than swaps identity; the later stages do the linking.",
+  "evidence": "Deep-EIoU (WACVW 2024): HOTA 77.2 on SportsMOT test and 85.4 on SoccerNet; ReID adds 3.8 HOTA; track buffer 60. Same benchmark (McByte paper table): ByteTrack 64.1 HOTA / 71.4 IDF1, OC-SORT 73.7 / 74.0. Frame-rate sensitivity (ColTrack, ICCV 2023, DanceTrack validation): ByteTrack HOTA 46.1 at native 20 fps, 32.3 at every 6th frame, 29.4 at every 10th; baseline IDF1 47.1 -> 31.6 -> 27.3. Hybrid-SORT with ReID scores 65.7 HOTA on DanceTrack against about 55 for OC-SORT.",
+  "applicability": "Detection currently runs at 10 Hz on 60/30 fps video. Futsal involves cutting moves and frequent crossings, so run YOLO at 30 Hz in both cameras (every 2nd frame of cam1); offline, the RTX 2070 can handle it. The cameras are static, so turn off GMC/CMC. Prefer short, single-person tracklets over long ones. Compare the sports-trained OSNet checkpoint (sports_model.pth.tar-60 from the Deep-EIoU / GTA-link repos) with osnet_ain_x1_0_msmt17. Deep-EIoU's association is a small change on top of ByteTrack (IoU on progressively enlarged boxes, then ReID), so it can be reimplemented for Python 3.14 instead of using its 3.7 environment.",
+  "expected_gain": "high",
+  "effort": "low",
+  "code": "github.com/hsiangwei0903/Deep-EIoU (YOLOX + sports OSNet weights; demo.py --path for custom video; Python 3.7 / torch 1.13 environment). boxmot 12 BotSort / HybridSort / DeepOcSort are already installed. No training.",
+  "sources": [
+   "https://arxiv.org/abs/2306.13074",
+   "https://github.com/hsiangwei0903/Deep-EIoU",
+   "https://arxiv.org/html/2506.01373v1",
+   "https://ar5iv.labs.arxiv.org/html/2308.05911",
+   "https://arxiv.org/pdf/2308.00783",
+   "https://trackers.roboflow.com/2.1.0/learn/benchmarks"
+  ],
+  "angle": "multicam"
+ },
+ {
+  "technique": "Use team and role labels as hard constraints: cluster crops into teams without supervision, vote at tracklet level, and forbid any merge or cross-view pairing between different labels",
+  "what_it_does": "Each tracklet gets a team or role label (yellow bibs, non-bib team, goalkeepers, referees) by majority vote over its crops. Merging tracklets with different labels, or pairing them across cameras, is forbidden. Appearance and motion then only need to tell 4-5 teammates apart.",
+  "evidence": "SportsSUSHI (Koshkina & Elder, arXiv 2502.21242, 2025), SoccerNet with ground-truth detections: adding pitch position raised HOTA 85.37 -> 89.22 and AssA 79.36 -> 84.25; adding jersey numbers reached 90.92 / 87.51. Team ID is one of its edge features. TrackID3x3 (2025, fixed-camera 3x3 basketball with bibs): 8x8x8 torso colour histograms, median over up to 100 frames, for team assignment, plus homography court coordinates; tracklet merging raised outdoor TI-HOTA 66.20 -> 71.03. PRTReID (MMSports'23): ReID trained only on identity labels can group players by skin colour instead of team. Komorowski 2022: same-team players are hard to separate by appearance.",
+  "applicability": "Bibs vs no bibs is a strong two-class cue but hides individual identity. Fit KMeans (k = 2-4) per match on large, confident near-camera torso crops, using either HSV/Lab histograms or SigLIP embeddings reduced with UMAP. Label each tracklet by majority vote. Add a separate cluster or rule for goalkeepers (colour outlier, near own goal) and for referees (outside the lines, as TrackID3x3 does). Apply the constraint in the cross-view pairing, the splitter and the identity solver. This likely removes about half of the candidate confusions, leaving only swaps between teammates.",
+  "expected_gain": "high",
+  "effort": "low",
+  "code": "roboflow/sports TeamClassifier (SigLIP + UMAP + KMeans, fits in seconds). PRTReID: github.com/VlSomers/Prtreid (weights through TrackLab / sn-gamestate auto-download). Plain sklearn KMeans on colour histograms also works. No training.",
+  "sources": [
+   "https://arxiv.org/html/2502.21242",
+   "https://arxiv.org/html/2503.18282v2",
+   "https://blog.roboflow.com/identify-basketball-players/",
+   "https://arxiv.org/html/2401.09942v1",
+   "https://github.com/SoccerNet/sn-gamestate",
+   "https://arxiv.org/abs/2211.02125"
+  ],
+  "angle": "multicam"
+ },
+ {
+  "technique": "Use the known player count: assign tracklets to a fixed set of K identity anchors (via ILP, or multi-commodity min-cost flow by team), with physical speed limits on links",
+  "what_it_does": "Instead of letting a linker create as many IDs as it likes, fused tracklets are assigned to exactly 5 identities per team (plus a referee pool). Constraints: tracklets that overlap in time cannot share an identity, and a gap can only be bridged if the player could cover the distance at plausible speed. The cost combines motion extrapolation likelihood, appearance and team.",
+  "evidence": "AI City 2023 Track 1 winner: anchor-guided clustering assigns detections to global identity anchors with Hungarian matching plus a 15-frame majority vote; IDF1 89.57 at baseline, 95.36 final. Multi-commodity network flow (Shitrit, Berclaz, Fleuret, Fua, TPAMI 2014): team or appearance groups act as commodities on multi-camera occupancy maps; validated on APIDIS basketball and ISSIA soccer, and appearance only needs to be seen occasionally. KSP (Berclaz et al., TPAMI 2011) is the flow solver underneath. TrackID3x3 enforces at most 6 on-court players and drops the tracks with the fewest on-court frames. Peak match speeds in soccer are 29-33 km/h (about 8-9 m/s); the futsal sprint threshold is about 18.3 km/h.",
+  "applicability": "Futsal has exactly 5 players per team on court, including the goalkeeper. Binary variable x[t,k] for fused tracklet t and identity k. Each tracklet gets at most one identity. Time-overlapping tracklets get different identities. A link t -> t' is allowed only if gap distance ≤ 9 m/s × Δt + 3σ, with σ from the covariance model above. Seed the anchors with the 10 longest, most confident fused tracklets that coexist at some moment. Allow an extra slot per team for substitutes. Solve with scipy.optimize.milp (HiGHS) or OR-Tools CP-SAT; a few hundred tracklets × 12 identities is a small problem. The output can never exceed 10 player IDs, so remaining errors become identifiable teammate swaps instead of 49 fragments.",
+  "expected_gain": "high",
+  "effort": "medium",
+  "code": "scipy.optimize.milp / linear_sum_assignment (already usable on Python 3.14); OR-Tools; EPFL cvlab KSP; anchor clustering in github.com/ipl-uw/AIC23_Track1_UWIPL_ETRI. No training.",
+  "sources": [
+   "https://ar5iv.labs.arxiv.org/html/2304.09471",
+   "https://infoscience.epfl.ch/record/181551",
+   "https://www.epfl.ch/labs/cvlab/?p=2104",
+   "https://arxiv.org/html/2503.18282v2",
+   "https://www.ncbi.nlm.nih.gov/pmc/articles/PMC10170543/"
+  ],
+  "angle": "multicam"
+ },
+ {
+  "technique": "Refine the homographies from matched players across cameras, and refine the clock offset and lens distortion at the same time",
+  "what_it_does": "Collect pairs of image foot points from players confidently matched across views, plus pitch-line keypoints. Jointly optimise H1, H2 (and k1, k2) so both cameras put the same player at the same pitch point, with a robust loss weighted by inverse covariance. Also search the time offset to minimise the cross-view residual of moving players.",
+  "evidence": "Voihanski, Sinai & Bobrovsky (arXiv 2609.18582, Sep 2026): starting from manual homographies, optimising projections toward shared centroids, using cross-view ReID matches, cut cross-camera alignment error from 37/42/42 cm to 20/14/24 cm. With the tracker unchanged: IDF1 0.938 -> 0.966, 0.717 -> 0.892 and 0.806 -> 0.906; HOTA 0.544 -> 0.783; ID switches 182 -> 38 in the crowded scene. Szulc & Iwanowski (2026): gradient-based homography refinement is more robust when the initial calibration is poor. ATLASFusion (arXiv 2509.08421, 2025): learned BEV fusion collapses under calibration noise (TrackTacular MODA 92 -> 50.5 at 0.5°/5 cm and -> 0.0 at 2°/20 cm).",
+  "applicability": "The 3 px figure is measured on pitch markings. What matters for fusion is the cross-view residual for the same player, which nobody has measured yet. Map it as a heatmap over the pitch from isolated, mutually matched players, taking the near camera's position as reference. Then refine both homographies (and distortion near the frame edges) with scipy least_squares. Also sweep the clock offset ±50 ms around +124.27 s: at 8 m/s, a 33 ms error is 0.27 m. Use ankles rather than box bottoms so the correspondences lie on z = 0.",
+  "expected_gain": "medium",
+  "effort": "low",
+  "code": "No code released for 2609.18582. Implementable in a few dozen lines with scipy.optimize.least_squares or torch Adam and cv2. No training.",
+  "sources": [
+   "https://arxiv.org/html/2609.18582v1",
+   "https://arxiv.org/abs/2604.10805",
+   "https://arxiv.org/html/2509.08421"
+  ],
+  "angle": "multicam"
+ },
+ {
+  "technique": "GTA-Link offline tracklet refinement: split tracklets by clustering their appearance embeddings (DBSCAN), then merge with constrained hierarchical clustering",
+  "what_it_does": "The splitter clusters a tracklet's OSNet embeddings with DBSCAN and cuts tracklets that contain more than one identity. The connector repeatedly merges non-overlapping tracklets whose mean cosine distance is below a threshold, subject to spatial and temporal gates. It works on any tracker's MOT-format output.",
+  "evidence": "GTA (Sun et al., ACCVW 2024), SportsMOT: Deep-EIoU 77.21 -> 81.04 HOTA and IDF1 79.81 -> 86.51; ByteTrack 63.46 -> 69.74 HOTA and IDF1 70.76 -> 83.16. SoccerNet: Deep-EIoU 79.41 -> 83.11 HOTA. GTATrack, winner of SoccerTrack 2025 (static fisheye cameras, arXiv 2602.00484): HOTA 0.42 with ByteTrack, 0.54 with Deep-EIoU, 0.60 adding GTA-Link; tracklets 53 -> 69 after splitting -> 27 after connecting. Selective mask propagation paper (2026), SportsMOT validation: Deep-EIoU IDF1 81.3 -> 93.3 with GTA added.",
+  "applicability": "A direct upgrade of the current colour-histogram agglomerative re-linking. Run the splitter on each camera's tracklets (eps 0.5-0.6, min_len about 30 frames at 30 fps) before cross-view pairing, so swaps at crossings are cut. Run the connector on fused tracklets, but replace its image-space spatial gate with the pitch speed gate and the team constraint above. Caveat: teammates in identical bibs look alike, so keep the merge threshold (default 0.4 cosine) conservative and let the fixed-count solver make the final call.",
+  "expected_gain": "medium",
+  "effort": "low",
+  "code": "github.com/sjc042/gta-link (MIT; MOT txt input; torchreid OSNet checkpoint trained on SportsMOT; tested on Python 3.8 / torch 2.3). The pretrained weights mean no training is needed.",
+  "sources": [
+   "https://arxiv.org/html/2411.08216",
+   "https://github.com/sjc042/gta-link",
+   "https://arxiv.org/html/2602.00484",
+   "https://arxiv.org/html/2606.13033"
+  ],
+  "angle": "multicam"
+ },
+ {
+  "technique": "Build a small pitch-plane ground truth plus proxy metrics, so thresholds can be tuned (TI-HOTA with a 1 m match radius)",
+  "what_it_does": "Score tracking in pitch coordinates by matching points within 1 m instead of matching boxes, on a short hand-corrected clip. Proxy metrics on the full match track the remaining fragmentation and implausible motion.",
+  "evidence": "TrackID3x3 (2025) scores identity tracking in court coordinates with TI-HOTA at τ = 1 m (indoor 85.53, outdoor 71.03). WILDTRACK and MultiviewX tracking (EarlyBird, TrackTacular) also use a 1 m threshold. Roboflow trackers docs: IDF1 reacts strongly to ID switches and long identity losses, while HOTA balances detection and association.",
+  "applicability": "With no labels, every threshold above is a guess. Label 60-90 s of the clip (600-900 frames at 10 Hz) by correcting tracker output on the near-camera view; budget about 2-3 h. Evaluate HOTA, IDF1 and ID switches in metres. Proxies for the full 3-minute clip: number of IDs present more than 50% of the time (target 10, now 7); total IDs (target 10-12, now 49); mid-pitch births and deaths (now 52, target about 0 apart from substitutions); count of implied speeds above 9 m/s or accelerations above 6 m/s²; median cross-view residual; share of frames with exactly 5+5 assigned players.",
+  "expected_gain": "medium",
+  "effort": "low",
+  "code": "TrackEval (github.com/JonathonLuiten/TrackEval) with a Euclidean point similarity, or py-motmetrics with Euclidean distance. No training.",
+  "sources": [
+   "https://arxiv.org/html/2503.18282v2",
+   "https://arxiv.org/html/2403.12573v1",
+   "https://trackers.roboflow.com/2.1.0/learn/benchmarks"
+  ],
+  "angle": "multicam"
+ },
+ {
+  "technique": "Single-pass hybrid alternative (PoseTrack, SJTU-Lenovo, AI City 2024): global pitch tracks that keep a separate 2D box Kalman state in each camera and are associated per camera using IoU, cross-view geometry and ReID",
+  "what_it_does": "Every frame, for each camera separately: Hungarian matching between that camera's detections and the global tracks. Affinity = (1·epipolar + 5·box IoU against the track's Kalman prediction in this camera + 1·homography foot distance (1.5 m gate) + 5·ReID) / (1 + ReID weight). Foot points come from ankles when keypoint confidence > 0.7. New targets come from multi-view clustering solved as a binary integer program with GLPK. Tracks are marked missing after 15 frames without updates.",
+  "evidence": "Xie et al., CVPRW 2024: HOTA 67.2175 in the paper (2nd on the leaderboard). The repo README reports a final score of 77.7258 including the 10% online bonus, ranked 1st, against 71.9446 for the offline Yachiyo entry. Weights and gates above were read from the released PoseTracker.py.",
+  "applicability": "This is the right online version of (c), and fits a future on-phone pipeline. A global identity is updated in each camera from that camera's own image-space prediction, which carries the largest weight, so far-side depth noise in the other view no longer causes swaps. With homographies only, drop the epipolar term. Alternatively, recover full projection matrices by adding goal-post and crossbar points (futsal goals are 2 m high) to the calibration, which enables epipolar checks and head-point triangulation. Run it at 30 Hz.",
+  "expected_gain": "medium",
+  "effort": "medium",
+  "code": "github.com/ZhenyuX1E/PoseTrack (tracking logic is about 1000 lines in track/Tracker/PoseTracker.py; aic_cpp ships as Linux .so files and depends on mmpose HRNet and fast-reid, so it needs porting to Windows / Python 3.14). Rule-based, so no training, but its ReID weights were fine-tuned on AI City data.",
+  "sources": [
+   "https://github.com/ZhenyuX1E/PoseTrack",
+   "https://openaccess.thecvf.com/content/CVPR2024W/AICity/html/Xie_A_Robust_Online_Multi-Camera_People_Tracking_System_With_Geometric_Consistency_CVPRW_2024_paper.html",
+   "https://arxiv.org/html/2404.09432v1",
+   "https://arxiv.org/pdf/2003.03972"
+  ],
+  "angle": "multicam"
+ },
+ {
+  "technique": "Selective mask propagation (SAM 2/3 or Cutie), run only in ambiguous crossing windows (McByte, Selective Mask Propagation)",
+  "what_it_does": "A video segmentation model propagates player masks only where association is uncertain, i.e. where the Hungarian cost margin is small or a track reappears after a gap. The tracker's identity decision is overridden only when a confident mask disagrees with it.",
+  "evidence": "McByte (Stanczyk et al., CVPRW 2025; training-free; SAM + Cutie): SportsMOT test HOTA 76.9 / IDF1 77.5 against ByteTrack 64.1 / 71.4; SoccerNet 85.0 HOTA; 3-5 FPS on an A100. Selective Mask Propagation (arXiv 2606.13033, 2026): triggered when the cost margin is below 0.05. SportsMOT test: SAM 3 + Deep-EIoU + GTA 87.2 HOTA / 93.6 IDF1 against 81.0 / 86.5 for GTA alone; the SAM 2 variant 85.5 / 91.2. About 0.11 s of SAM time per frame on an RTX 5090. 94.7% of opened windows leave the output unchanged.",
+  "applicability": "Offline processing allows spending compute only at crossings, i.e. same-team pairs with box IoU > 0.3 or pitch distance < 1.5 m. Propagate masks for ±1-2 s in whichever camera sees the crossing larger (usually the near one; 30-80 px far players are small for masks) and use the result to decide which outgoing tracklet continues which incoming one. SAM 2.1 tiny or small should fit in 8 GB.",
+  "expected_gain": "medium",
+  "effort": "high",
+  "code": "McByte: github.com/tstanczyk95/McByte (release status not confirmed). SAM 2: facebookresearch/sam2. Cutie. No code found for 2606.13033. All training-free.",
+  "sources": [
+   "https://arxiv.org/html/2506.01373v1",
+   "https://openaccess.thecvf.com/content/CVPR2025W/CVSPORTS/html/Stanczyk_No_Train_Yet_Gain_Towards_Generic_Multi-Object_Tracking_in_Sports_CVPRW_2025_paper.html",
+   "https://arxiv.org/html/2606.13033"
+  ],
+  "angle": "multicam"
+ },
+ {
+  "technique": "Learned bird's-eye-view early-fusion trackers (MVDet, EarlyBird, TrackTacular, MVFlow, MCBLT, ATLASFusion): not usable now; borrow the idea only",
+  "what_it_does": "These project image features from every camera onto a ground grid and learn detection plus association there, e.g. a center heatmap with motion offsets (TrackTacular) or flow between neighbouring cells (MVFlow).",
+  "evidence": "WILDTRACK IDF1 / MOTA: EarlyBird 92.3 / 89.5; MVFlow 93.5 / 91.3; TrackTacular 95.3 / 91.8; MCBLT 95.6 / 92.6; ATLASFusion (2025) 95.9 / 92.4. Older per-camera-then-associate baselines: KSP-DO 73.2 / 69.6; DMCT Stack 81.9 / 74.6. All learned methods are trained per scene on labelled ground-plane data (WILDTRACK: 7 elevated cameras). TrackTacular cross-scene on Synthehicle: IDF1 18.3, MOTA -22.0; its authors say these models do not generalise robustly to new scenes. Calibration noise: TrackTacular MODA 92 -> 50.5 at 0.5°/5 cm and -> 0 at 2°/20 cm. Komorowski 2022 (multi-camera soccer, IJCNN) needed synthetic Google Research Football data plus real fine-tuning.",
+  "applicability": "They confirm that the ground plane is the right shared state, but they need labelled data from your own rig and tight calibration. Two low corner phones with no labels make them unusable now. What to borrow without training: fuse evidence rather than hard detections, e.g. a pitch occupancy likelihood built from both cameras' covariance ellipses, as in the covariance finding above. Revisit after the ground-truth labelling step yields labels, or with synthetic data.",
+  "expected_gain": "low",
+  "effort": "high",
+  "code": "github.com/tteepe/EarlyBird, github.com/tteepe/TrackTacular, github.com/cvlab-epfl/MVFlow, github.com/hou-yz/MVDet. All require training on target-scene BEV ground truth.",
+  "sources": [
+   "https://arxiv.org/html/2403.12573v1",
+   "https://arxiv.org/abs/2310.13350",
+   "https://ar5iv.labs.arxiv.org/html/2210.10771",
+   "https://arxiv.org/html/2509.08421",
+   "https://arxiv.org/abs/2211.02125"
+  ],
+  "angle": "multicam"
+ },
+ {
+  "technique": "Assign tracklets to exactly N identities per team with a constrained integer program (closed-set labelling with cannot-link, reachability and known-N constraints)",
+  "what_it_does": "Treat the problem as labelling, not open-ended clustering. Each pure tracklet gets one of K identities for its team, or 'unassigned/false positive'. Binary x[t,k]. Hard constraints: (a) sum_k x[t,k] <= 1. (b) Two tracklets that share any frame cannot share an identity: x[t,k]+x[u,k] <= 1. (c) Two tracklets whose endpoint gap is physically unreachable (distance > v_max*dt + slack) cannot share an identity. (d) Constraint (b) already caps each team at K active identities per frame. The objective sums, over assignments, tracklet length times (appearance distance to identity prototype k, minus a coverage reward). It can add a penalty for births or deaths away from the substitution zone or touchlines. Prototypes come from the first 'global fragment', a window where all 5 same-team tracklets coexist, which pins down 5 distinct people and removes label symmetry. Then alternate assign and re-estimate prototypes (EM) for 3-5 rounds. A cheaper variant runs Hungarian assignment (linear_sum_assignment) of the tracklets in each window to the K prototypes, with the overlap constraint.",
+  "evidence": "None of these works fit our exact setting, but they all point the same way. (1) SportsMOT challenge entry (Huang et al., WACVW 2023): post-processing that fixes the 10 basketball players as the identity set and matches re-appearing tracklets to them by cosine similarity. Together with ReID post-processing for the other sports, it took overall HOTA from 71.76 to 73.97 (OC-SORT baseline 67.11). (2) Maglo et al. 2022, closed-gallery tracklet-to-identity assignment with one identity per frame. Rugby IDF1 76.8/84.3/82.2 vs ByteTrack 48.8/54.9/60.3 on three clips. The same group's Kalisteo entry won the SoccerNet 2023 tracking challenge (HOTA 75.61), and on SoccerNet with GT boxes it scores HOTA 96.57 vs SUSHI 85.79 (SportsSUSHI Table 4). (3) Lu, Ting, Little, Murphy (TPAMI 2013): CRF with temporal and mutual-exclusion constraints solved by an LP relaxation for player identification. (4) Ben Shitrit et al. (TPAMI 2014): multi-commodity network flow, built to preserve identities when people cross, evaluated on APIDIS basketball, ISSIA soccer and full FIBA matches. (5) Williams, Hennessey, Kuncheva (Pattern Analysis and Applications 2025): clustering tracks into a known K with co-occurrence cannot-links beat 13 clustering baselines (mean ARI 0.245 vs 0.131 for raw tracks). That gain is modest and the data is hard (pigs, fish).",
+  "applicability": "This replaces the open-ended agglomerative re-linking in pitch_tracker.associate, which is what produces 49 IDs: it has no notion of 'exactly 5 per team'. After the team split (finding 2) we have two independent 5-identity problems. A 3-minute clip has ~100-200 tracklets x 5 labels, so a few hundred to ~1000 binaries plus pairwise overlap and reachability constraints. HiGHS solves that in well under a second. For a full match, solve in 5-10 minute windows with overlap and chain windows by Hungarian matching on prototypes. Use v_max of about 8 m/s for futsal sprints, plus ~1.5 m slack for homography error and edge distortion. Futsal caveat: substitutions are rolling and unlimited, so over a whole match K = squad size (e.g. 7-9 per team), not 5. The constraint becomes 'at most 5 active per team per frame', and births or deaths are allowed only near the substitution zone in front of the benches. For a pickup game with no subs, K=5 per team, 10 total. The output guarantees at most 10 simultaneous IDs and no impossible teleports. Remaining errors become 'wrong label on a short tracklet' rather than 'new ID'.",
+  "expected_gain": "high",
+  "effort": "medium",
+  "code": "No packaged implementation. It is about 150-250 lines on top of what is already in .venv: scipy 1.18 (scipy.optimize.milp uses HiGHS; linear_sum_assignment), networkx 3.6, scikit-learn 1.9. Training-free. Optional reference: Maglo et al. released their rugby tracklets and GT (Kalisteo CEA page), but no code.",
+  "sources": [
+   "https://arxiv.org/html/2209.13154",
+   "https://arxiv.org/html/2204.04049v1",
+   "https://arxiv.org/html/2502.21242",
+   "https://www.cs.ubc.ca/~murphyk/Papers/weilwun-pami12.pdf",
+   "https://infoscience.epfl.ch/record/181551",
+   "https://pmc.ncbi.nlm.nih.gov/articles/PMC12178989/",
+   "https://arxiv.org/html/2508.19182v1"
+  ],
+  "angle": "offline-global"
+ },
+ {
+  "technique": "Per-tracklet team classification from bib colour, used as a hard constraint (split mixed tracklets on colour flips, then solve two 5-player problems)",
+  "what_it_does": "Score each box for team: the fraction of yellow pixels (HSV hue about 20-35 deg, high saturation and value) in the torso band, roughly 20-55% of box height. Aggregate per tracklet with a median and confidence over both cameras. Pick the threshold automatically per match with a 2-component GMM or Otsu. Use the result three ways. (1) Cannot-link: different-team tracklets never merge. (2) Split: if the yellow score inside a tracklet flips persistently (e.g. 2+ s yellow, then 2+ s not), cut it there; it contained two people. (3) Decomposition: the identity problem becomes two independent K=5 problems, with crossings between opposing players resolved by colour alone. The generic alternative is the Roboflow pipeline: SigLIP vision embeddings, UMAP to 3 dimensions, KMeans with 2 clusters.",
+  "evidence": "Roboflow sports TeamClassifier: google/siglip-base-patch16-224 embeddings, then UMAP(n_components=3), then KMeans(2), fit on crops sampled from the match (Skalski, Roboflow blog, Sep 2025). A small blog test on 372 Bundesliga crops (UMAP+KMeans, 2025) found SigLIP gave the lowest accuracy and only CLIP and ResNet exceeded 0.8 mean accuracy; the author blamed small crops. Jersey-colour KMeans reported 92.5% team accuracy, dropping about 6% under heavy overlap and lighting changes (JUTIF 2025). PRTreID team clustering: 95.6% with a multi-task ReID vs 91.87% with plain ReID (2024). SoccerNet GSR: the 2024 winner (GS-HOTA 63.81 vs 43.15 for second) first splits tracklets so each holds one team ID and jersey number, then merges only same-team tracklets. The 2025 winner, KIST-GSR (63.90), splits on identity-prediction inconsistency and assigns team by jersey-colour clustering.",
+  "applicability": "Our two teams differ by yellow bib vs mixed dark clothes, a nearly binary colour cue. A hand-built yellow-fraction feature should beat SigLIP, especially for far-side players only 30-80 px tall in cam2, where SigLIP-style embeddings degrade. Two diagonal cameras give two independent votes per frame. Doing this first gives the largest structural simplification: it removes every cross-team ID switch, roughly half of all crossings. Goalkeepers may wear a different top. Treat GK as a third colour cluster, or use a position prior (inside own penalty area most of the time), as the 2024 GSR winner did for goalkeepers. Remember the teams switch ends at half time.",
+  "expected_gain": "high",
+  "effort": "low",
+  "code": "Training-free. OpenCV HSV and numpy only, both already installed. The SigLIP route would need transformers and umap-learn (not in .venv); reference code: github.com/roboflow/sports, sports/common/team.py.",
+  "sources": [
+   "https://github.com/roboflow/sports/blob/main/sports/common/team.py",
+   "https://blog.roboflow.com/identify-basketball-players/",
+   "https://medium.com/@szym.kulpinski/clustering-football-players-using-image-embeddings-umap-and-k-means-c5acf9e28fce",
+   "https://jutif.if.unsoed.ac.id/index.php/jurnal/article/view/4165",
+   "https://arxiv.org/html/2401.09942v1",
+   "https://arxiv.org/html/2504.06357v1",
+   "https://arxiv.org/html/2508.19182v1"
+  ],
+  "angle": "offline-global"
+ },
+ {
+  "technique": "Tracklet-level cross-camera association (LMGP-style geometric pre-clustering) instead of per-frame greedy fusion",
+  "what_it_does": "Build short, conservative tracklets in each camera's image plane first, where box overlap and occlusion order are visible. Use an image-plane tracker with ReID: BoT-SORT, StrongSORT or BoostTrack from boxmot with OSNet. Project each tracklet's foot points to the pitch. Then match cam1 tracklets to cam2 tracklets with Hungarian, scored by median pitch distance over their co-visible frames. This replaces per-frame greedy distance matching. Cross-view disagreement doubles as a purity test: if cam1 tracklet A matches cam2 tracklet B for its first half and C for its second, someone switched at that moment, so split there. LMGP then solves a lifted multicut over these multi-view tracklets.",
+  "evidence": "LMGP (Nguyen et al., CVPR 2022) on WILDTRACK, full model: IDF1 98.2, MOTA 97.1, 12 ID switches. Without the geometry-projection pre-clustering: IDF1 79.4, MOTA 73.6, 76 ID switches, the largest drop of any ablation. Without tracklet splitting: IDF1 92.4. The ground-plane KSP baseline KSP-DO reaches only IDF1 73.2. Separately, on fixed fisheye cameras (SoccerTrack 2025 winner, GTATrack 2026), the appearance-based image-plane tracker Deep-EIoU scored HOTA 0.54 vs ByteTrack 0.42 before any offline step.",
+  "applicability": "Our 52 mid-pitch births and deaths suggest the per-frame greedy fusion itself breaks continuity. At ~3 px reprojection error plus edge distortion, two players 1 m apart can be fused wrongly in a single frame. Over a 1-3 s tracklet the evidence averages out and becomes reliable. Diagonal corner cameras are ideal: occlusions in one view are usually clear in the other, so cross-view consistency both fixes and detects switches. Run per-camera tracking at the 10 Hz detection rate, with timestamps aligned through the +124.27 s sync. Use a slightly looser pitch gate (~1.5 m) near image edges where distortion is worse. The resulting fused tracklets carry appearance from two views, which strengthens findings 1, 4 and 5.",
+  "expected_gain": "high",
+  "effort": "medium",
+  "code": "Per-camera trackers already installed: boxmot 12 (BotSort, StrongSort, BoostTrack, DeepOcSort) and ultralytics BoT-SORT, with osnet_ain_x1_0_msmt17. Cross-view matching is scipy linear_sum_assignment. LMGP's authors said code would appear at github.com/nhmduy/LMGP (not verified); the lifted-multicut solver is optional. All training-free.",
+  "sources": [
+   "https://ar5iv.labs.arxiv.org/html/2111.11892",
+   "https://arxiv.org/abs/2111.11892",
+   "https://arxiv.org/html/2602.00484v1",
+   "https://github.com/hsiangwei0903/Deep-EIoU"
+  ],
+  "angle": "offline-global"
+ },
+ {
+  "technique": "Few-shot human seeding of a closed gallery (label 3-6 tracklets per player once per match, then classify the rest)",
+  "what_it_does": "Generate unambiguous tracklets automatically. A person names each player on a handful of tracklets (about 1 example per player per round). A small classifier over tracklet embeddings (Maglo et al. used a Transformer over ReID features) or simple prototype matching assigns every other tracklet to one of the known players or to 'other'. Labels are applied greedily from the highest-scoring tracklet-identity pair downwards, under a one-identity-per-frame rule.",
+  "evidence": "Maglo, Orcesi, Pham (CVPRW 2022), rugby sevens, about 6 annotations per player: IDF1 76.8/84.3/82.2 vs ByteTrack 48.8/54.9/60.3 on three 40 s clips. Metrics plateau after about 3.5 annotations per player. The same group's Kalisteo entry won the SoccerNet 2023 tracking challenge (HOTA 75.61 vs 69.54 for next). In SportsSUSHI's comparison table (2025) their method is best on SoccerNet: HOTA 96.57 with GT boxes and 73.29 with YOLOX boxes, vs SportsSUSHI 90.92/71.36.",
+  "applicability": "We have no ground truth and only ~10 people, so labelling about 30-60 short tracklets per match (a few minutes in a crop-sheet UI) is cheap. The project already has experiments/harness.audit_sheet for making crop sheets. The labels then do double duty. They are the prototypes or must-links that seed the constrained assignment (finding 1) and fix its label symmetry. They are also the first ground truth for measuring IDF1, so tuning stops relying on proxy counts such as '49 IDs' and '7 IDs >50%'. The labelling step can be removed later (for the phone pipeline) once automatic seeding from global fragments is shown to match it.",
+  "expected_gain": "high",
+  "effort": "low",
+  "code": "No official code. Rugby dataset, GT and tracklets are public on the Kalisteo CEA page. A labelling UI plus nearest-prototype or logistic regression over OSNet features is about 100 lines with scikit-learn (installed).",
+  "sources": [
+   "https://arxiv.org/html/2204.04049v1",
+   "https://arxiv.org/html/2502.21242",
+   "https://arxiv.org/pdf/2309.06006"
+  ],
+  "angle": "offline-global"
+ },
+ {
+  "technique": "Per-match self-supervised identity embedding (idtracker.ai-style contrastive learning, positives within a tracklet, negatives between tracklets that coexist in time)",
+  "what_it_does": "Generic ReID (OSNet trained on MSMT17) separates teammates in identical bibs poorly. Learn an identity space for this one match without labels. Positive pairs are crops from the same pure tracklet, including the other camera's view of the same fused tracklet. Negative pairs are crops from tracklets that coexist in the same frame, so they must be different people; same-team pairs are the useful ones. Train a small projection head on frozen OSNet features, or fine-tune osnet_x0_25, for a few minutes. Then cluster with K-means at K=5 per team, or feed distances into the ILP in finding 1. A diagnostic, 'fragment connectivity' (mean number of coexisting fragments divided by N-1), predicts when the method will fail.",
+  "evidence": "New idtracker.ai (Torrents, Costa, de Polavieja; eLife reviewed preprint 2025, bioRxiv 2025.05.30.657023) recasts tracking a known number of individuals as contrastive representation learning on same/different pairs derived from video structure. It drops the old requirement of 'global fragments' (windows where all N are visible). On a 33-video benchmark it reports high IDF1 on every video, where the original version fell to 93.77% and 69.66% on hard videos, and it runs up to 440-700x faster. It warns when fragment connectivity is below 0.5. The intermediate v5 had mean IDF1 99.63% (no crossings) / 99.49% (with crossings). Caveat: this is animals filmed from above, where identity cues are subtle but viewpoint is stable.",
+  "applicability": "This is the cue that addresses our hardest case: telling the 5 yellow-bib players apart from each other. Coexistence negatives are plentiful (5 teammates on court almost all the time, connectivity near 1), so the 'fragment connectivity >= 0.5' condition is easily met. It uses only the RTX 2070 SUPER and needs no labels. Combine it with lower-body colour (shorts, socks, shoes) and metric height (finding 10), since bibs hide upper-body differences. The non-bib team's mixed dark clothes are already fairly distinctive per player.",
+  "expected_gain": "high",
+  "effort": "medium",
+  "code": "idtracker.ai is open source (pip install idtrackerai) but built for top-down animal videos, so it is not directly usable. Reimplementing the idea takes about 150 lines of PyTorch on boxmot's OSNet backbone (torch 2.11+cu128 installed). Training-free in the sense of needing no annotations; per-match self-supervised training only.",
+  "sources": [
+   "https://elifesciences.org/reviewed-preprints/107602",
+   "https://www.biorxiv.org/content/10.1101/2025.05.30.657023.full.pdf",
+   "https://elifesciences.org/reviewed-preprints/107602v1/figures"
+  ],
+  "angle": "offline-global"
+ },
+ {
+  "technique": "Make tracklets pure before linking: split at same-team close encounters and run a GTA-style appearance splitter (DBSCAN) on long tracklets",
+  "what_it_does": "The global step can only be as good as tracklet purity. (1) Cut both tracks whenever two same-team players come within about 1-1.5 m on the pitch, since identity is unknowable there from motion alone. (2) Run GTA's Tracklet Splitter on long tracklets: DBSCAN over each tracklet's per-box ReID embeddings (cosine distance, eps 0.6, min_samples 5-10, at most 3 sub-tracklets, outliers reassigned to the nearest cluster). (3) Split where the team score flips or the cross-view match changes (findings 2-3).",
+  "evidence": "GTA (Sun et al., ACCVW 2024) ablation, HOTA connector-only vs connector+splitter. SportsMOT: SORT 65.43 vs 66.52, ByteTrack 69.51 vs 69.74, Deep-EIoU 80.48 vs 81.04. SoccerNet: SORT 71.74 vs 72.73, ByteTrack 71.05 vs 71.97, Deep-EIoU 82.01 vs 83.11. GTATrack (SoccerTrack 2025 winner) warns the splitter 'may cause over-fragmentation in stable scenes'. LMGP: removing tracklet splitting dropped WILDTRACK IDF1 from 98.2 to 92.4. Maglo et al. cut tracklets at box IoU > 0.5 and kept only about 30% of tracklets as unambiguous. idtracker.ai defines an individual fragment as the images between two crossings.",
+  "applicability": "Our tracker already 'breaks when ambiguous', which is right. The gap is that ambiguity is judged by motion only, so some switches slip through (fast direction changes, 30-80 px far-side players), and the re-linker then glues mixed tracks together. A same-team proximity cut costs nothing on the pitch plane. Over-splitting is cheap once the known-N assignment (finding 1) exists, because short fragments are then labelled, not turned into new IDs. Run the DBSCAN splitter only on tracklets longer than about 10 s (100 samples at 10 Hz, matching GTA's min_len 100).",
+  "expected_gain": "medium",
+  "effort": "low",
+  "code": "Training-free. sklearn.cluster.DBSCAN (installed). The reference splitter is in github.com/sjc042/gta-link, refine_tracklets.py (MIT).",
+  "sources": [
+   "https://arxiv.org/html/2411.08216v1",
+   "https://github.com/sjc042/gta-link",
+   "https://arxiv.org/html/2602.00484v1",
+   "https://ar5iv.labs.arxiv.org/html/2111.11892",
+   "https://arxiv.org/html/2204.04049v1"
+  ],
+  "angle": "offline-global"
+ },
+ {
+  "technique": "GTA-Link Tracklet Connector as a drop-in baseline (hierarchical clustering on mean ReID distance with overlap and spatial constraints)",
+  "what_it_does": "Model-agnostic offline post-processing. It averages OSNet embeddings per tracklet and computes pairwise cosine distances between tracklets. Pairs that share any frame get distance 1, as do pairs whose displacement exceeds beta times the maximum box displacement (beta = 1 on SportsMOT, 0.7 on SoccerNet). It then merges by agglomerative clustering until no pair is under alpha = 0.4. It does not use a known N.",
+  "evidence": "GTA, ACCVW 2024, HOTA / AssA / IDF1 before and after. SportsMOT: SORT 56.28 to 66.52 / 42.67 to 59.59 / 58.83 to 77.37; ByteTrack 63.46 to 69.74 / 51.81 to 62.61 / 70.76 to 83.16; Deep-EIoU 77.21 to 81.04 / 67.63 to 74.51 / 79.81 to 86.51. SoccerNet: Deep-EIoU 79.41 to 83.11 / 71.55 to 78.38 / 78.40 to 84.66. Part of 2025-2026 winning systems: the SoccerTrack 2025 winner (Deep-EIoU + GTA-Link, HOTA 0.54 to 0.60, AssA 0.38 to 0.47) and SoccerNet GSR 2025 4th place (BoT-SORT + GTA).",
+  "applicability": "It is structurally what our associate() already does (agglomerative clustering with constraints), but on learned ReID distance instead of colour histograms. Running it unchanged on our tracklets is a cheap A/B test that shows how much the colour features cost us. Adapt it in two ways: replace its image-space displacement constraint with metric pitch reachability, and swap in boxmot's OSNet weights (or GTA's SportsMOT-trained OSNet checkpoint). Limitation: threshold-based stopping cannot hit exactly 10 identities. Use it to pre-merge obvious pairs (distance below ~0.25) before the constrained assignment in finding 1.",
+  "expected_gain": "medium",
+  "effort": "low",
+  "code": "github.com/sjc042/gta-link (MIT). generate_tracklets.py and refine_tracklets.py take MOT-format txt; defaults are eps 0.6, min_samples 10, merge_dist_thres 0.4, spatial_factor 1.0, min_len 100, max_k 3. It needs torchreid 1.4 (setup.py requires setuptools<60, and Python 3.14 compatibility is unverified). Easier: compute embeddings with boxmot's ReID backend and port the ~200-line refine logic. Training-free.",
+  "sources": [
+   "https://arxiv.org/abs/2411.08216",
+   "https://arxiv.org/html/2411.08216v1",
+   "https://github.com/sjc042/gta-link",
+   "https://arxiv.org/html/2602.00484v1",
+   "https://arxiv.org/html/2508.19182v1"
+  ],
+  "angle": "offline-global"
+ },
+ {
+  "technique": "Pitch-plane reachability gating plus gap filling (Gaussian-smoothed interpolation / linear interpolation, then smoothing)",
+  "what_it_does": "Allow two tracklets to belong to one person only if the end-to-start distance is physically traversable within the gap. After identities are fixed, fill each identity's missing samples on the pitch. GSI (from StrongSORT) fits a Gaussian process with an RBF kernel per trajectory; its smoothness scales with trajectory length (lambda = tau*log(tau^3/l), tau = 10, maximum gap 20 frames). Others use linear interpolation followed by Savitzky-Golay smoothing.",
+  "evidence": "StrongSORT (2022/2023), MOT17-val, adding AFLink+GSI. IDF1/MOTA/HOTA: StrongSORTv3 79.7/77.1/68.3 to 80.9/78.7/69.5; FairMOT 72.7/69.1/57.3 to 74.2/71.1/59.0; CenterTrack HOTA +2.3. Cost: 7.1 ms/frame. SoccerNet GSR 2024 winner (GS-HOTA 63.81): merges only when the gap is 'physically traversable by a player', then interpolates linearly; post-processing cut the tracklet count by about 90%. SportsSUSHI (WACVW 2025) ablation on SoccerNet GT boxes: adding field coordinates raised HOTA 85.37 to 89.22 and AssA 79.36 to 84.25, the single biggest feature gain, bigger than jersey numbers (+0.56 HOTA).",
+  "applicability": "We already work in metres, which is the cue that SportsSUSHI shows matters most. Gate with v_max of about 8 m/s plus about 1.5 m slack (larger near image edges because of distortion). At 10 Hz, interpolate gaps of 2-3 s or less with GSI or a cubic Hermite spline that uses endpoint velocities. Mark longer gaps as 'occluded, identity known', not as a new ID. This directly removes the 'mid-pitch births/deaths' artefact and gives the continuous 10-player trajectories the analytics need. Do it after identity assignment, so interpolation never bridges two different people.",
+  "expected_gain": "medium",
+  "effort": "low",
+  "code": "Training-free. GSI is about 20 lines with sklearn GaussianProcessRegressor (reference: github.com/dyhBUPT/StrongSORT, GSI.py). Linear interpolation and Savitzky-Golay are in scipy.signal (installed). AFLink needs a trained model, so skip it.",
+  "sources": [
+   "https://arxiv.org/html/2202.13514v2",
+   "https://arxiv.org/html/2504.06357v1",
+   "https://arxiv.org/html/2502.21242",
+   "https://arxiv.org/html/2508.19182v1"
+  ],
+  "angle": "offline-global"
+ },
+ {
+  "technique": "Min-cost flow / K-shortest paths with the flow fixed to the known player count (optionally multi-commodity per team)",
+  "what_it_does": "Build a DAG over tracklets (or pitch-plane detections). Each node is split in/out with capacity 1 and a negative cost that rewards coverage. Link edges carry -log P(same person), from motion extrapolation, gap length and appearance. Source and sink edges are allowed only at clip start and end or near the substitution zone. Push exactly K units of flow (5 per team) and solve exactly. The result is K disjoint paths that cover the tracklets, so the number of trajectories is guaranteed. Multi-commodity flow (Ben Shitrit et al.) adds identity or appearance-group commodities, so the paths respect sparse appearance cues such as team colour.",
+  "evidence": "KSP on a ground-plane occupancy map (Berclaz et al., TPAMI 2011) is the canonical fixed-multi-camera formulation, but without appearance it switches identities. On WILDTRACK, KSP-DO reaches IDF1 73.2 vs 98.2 for LMGP. Multi-commodity network flow (Ben Shitrit, Berclaz, Fleuret, Fua, TPAMI 2014) adds appearance to prevent identity switches. It is evaluated on APIDIS basketball, ISSIA soccer, PETS'09 and full world-championship basketball matches, preserving identity better than the trackers it was compared with. muSSP (NeurIPS 2019) solves the same flow exactly, 5-337x faster than the best competing solver across 40 tracking experiments.",
+  "applicability": "Use it as the linker that guarantees continuity: per team, flow = 5, over the pure tracklets from findings 3 and 6. Only pairwise (adjacent-link) costs enter the flow, so long-range appearance consistency is weak. Use flow to build continuous chains and the ILP in finding 1 or the contrastive features in finding 5 to label them, or fold the flow constraints into the same MILP. The graph has a few hundred nodes per team, so networkx.min_cost_flow is instant; muSSP is unnecessary at this scale. A detection-level KSP on a pitch occupancy grid would also replace greedy fusion, but needs hidden-state nodes for missed detections and is more work.",
+  "expected_gain": "medium",
+  "effort": "medium",
+  "code": "networkx 3.6 min_cost_flow / network_simplex (installed). Alternatively scipy.optimize.milp. Unofficial muSSP Python port: github.com/swetanjal/muSSP-Efficient-Min-cost-Flow-Algorithm-for-Multi-object-Tracking (not verified). Training-free.",
+  "sources": [
+   "https://infoscience.epfl.ch/record/181551",
+   "https://infoscience.epfl.ch/record/186751?ln=en",
+   "https://ar5iv.labs.arxiv.org/html/2111.11892",
+   "https://proceedings.neurips.cc/paper/2019/hash/b1d10e7bafa4421218a51b1e1f1b0ba2-Abstract.html",
+   "https://opus.lib.uts.edu.au/handle/10453/147019"
+  ],
+  "angle": "offline-global"
+ },
+ {
+  "technique": "Soft biometrics and jersey numbers as extra per-tracklet identity evidence (metric height, lower-body colour; number OCR only if bibs are numbered)",
+  "what_it_does": "Add identity features that are aggregated per tracklet and do not depend on the bib: (a) metric height from box height plus homography, estimated in both cameras and taken as a median; (b) shorts, socks and shoe colour histograms; (c) if bibs carry numbers, tracklet-level OCR with legibility filtering and voting. Number OCR uses a pipeline like Koshkina and Elder's or PARSeq. These become extra terms in the prototype distance of finding 1.",
+  "evidence": "Koshkina and Elder (CVPRW 2024): 91.4% image-level accuracy on hockey and 87.4% tracklet-level accuracy on soccer. Numbers are legible only in a minority of frames, so tracklet voting is essential. SportsSUSHI: adding jersey numbers raised SoccerNet HOTA only 89.22 to 89.78 (9 layers), much less than field coordinates (+3.85). TrackID3x3 (2025, fixed indoor cameras, bibs without numbers) fell back on team colour (8x8x8 torso histograms, Jensen-Shannon divergence) and position. Its offline merge step raised TI-HOTA 84.45 to 85.53 indoor and 66.20 to 71.03 outdoor.",
+  "applicability": "Pickup-futsal bibs are usually unnumbered, and far-side players are only 30-80 px tall in cam2, so number OCR is likely unusable. Skip it unless the bibs are numbered and close-camera crops reach 100 px or more. Metric height is cheap and fits our homography setup: two views give a stable estimate, and differences of 5-10 cm or more separate many teammates. The current colour feature already up-weights the lower body (lower_weight 0.7), which is right for the yellow-bib team. Keep it as a feature in findings 1 and 5, not a standalone method.",
+  "expected_gain": "low",
+  "effort": "low",
+  "code": "Height and colour: numpy/OpenCV, training-free. Jersey OCR: github.com/mkoshkina/jersey-number-pipeline (needs several models).",
+  "sources": [
+   "https://arxiv.org/abs/2405.13896",
+   "https://arxiv.org/html/2502.21242",
+   "https://arxiv.org/html/2503.18282v2",
+   "https://github.com/open-starlab/TrackID3x3"
+  ],
+  "angle": "offline-global"
+ },
+ {
+  "technique": "Learned hierarchical graph trackers (SUSHI, SportsSUSHI) and learned online trackers (CAMELTrack, McByte++): watch, but not usable now",
+  "what_it_does": "SUSHI (CVPR 2023) builds a hierarchy of subclips up to 512 frames and runs a message-passing GNN at each level. SportsSUSHI (WACVW 2025) adds field coordinates, team one-hot and jersey-number features to the graph edges for long-term player tracking. CAMELTrack (2025) learns association across cues with transformers. McByte++ (Aug 2026) is training-free mask propagation plus online re-ID, with optional offline global association.",
+  "evidence": "SportsSUSHI on SoccerNet with GT boxes: HOTA 90.92 / AssA 87.51 vs SUSHI 85.79 / 75.55. With YOLOX boxes: 71.36 vs ByteTrack 60.56. Hockey: 71.24 vs ByteTrack 67.51. CAMELTrack: reported SportsMOT HOTA 80.4 (third-party summary). McByte++: up to +3.0 HOTA and +6.1 IDF1 over McByte online on SoccerNet and SportsMOT, with further gains from offline global association. Selective Mask Propagation (2026): SAM 3 + Deep-EIoU + global association, SportsMOT HOTA 87.2.",
+  "applicability": "SUSHI and SportsSUSHI need training on labelled tracks, and SportsSUSHI's code is still marked 'coming soon'. We have no labels, and the gains are measured on single broadcast cameras, not two calibrated fixed views. SAM-based mask propagation runs at about 1-2 FPS on a T4 (Roboflow's report for SAM2), far too heavy for the future phone pipeline. The useful lesson is SportsSUSHI's ablation: field position beats jersey numbers, which supports our pitch-plane design. Revisit once findings 1 and 4 have produced a few labelled matches to train on.",
+  "expected_gain": "low",
+  "effort": "high",
+  "code": "SUSHI: official code from the authors (link via bit.ly/sushi-mot, likely github.com/dvl-tum/SUSHI; not verified), needs training. SportsSUSHI: github.com/mkoshkina/sports-SUSHI, code not yet released. CAMELTrack: github.com/TrackingLaboratory/CAMELTrack, needs training. McByte++: github.com/tstanczyk95/McBytePlusPlus, training-free.",
+  "sources": [
+   "https://openaccess.thecvf.com/content/CVPR2023/papers/Cetintas_Unifying_Short_and_Long-Term_Tracking_With_Graph_Hierarchies_CVPR_2023_paper.pdf",
+   "https://arxiv.org/html/2502.21242",
+   "https://github.com/mkoshkina/sports-SUSHI",
+   "https://arxiv.org/abs/2505.01257",
+   "https://arxiv.org/abs/2608.15688",
+   "https://arxiv.org/abs/2606.13033",
+   "https://blog.roboflow.com/identify-basketball-players/"
+  ],
+  "angle": "offline-global"
+ },
+ {
+  "technique": "Track each camera in image space at native frame rate (~30 fps) with a boxmot tracker, then fuse whole tracklets across cameras on the pitch plane (instead of fusing per frame at 10 Hz and tracking afterwards)",
+  "what_it_does": "IoU and Kalman trackers (ByteTrack, OC-SORT, BoT-SORT, Deep OC-SORT, HybridSORT) assume that a box overlaps its next detection. At 30 fps that overlap is kept. Matching cam1 and cam2 tracklets over many shared frames (median pitch distance) is far more reliable than greedy matching in every frame.",
+  "evidence": "The OC-SORT authors (arXiv 2203.14360) note that when objects move fast or the frame rate is low, box IoU between consecutive frames can be very low or zero, and that this comes from IoU as a cue, not from the tracker. Geometry (my own calculation): for a box of width w shifted sideways by d, IoU = (w-d)/(w+d). A futsal player's box is about 0.7 m wide. Running at 6 m/s, the player moves 0.6 m per 10 Hz step, giving IoU of about 0.08, well below boxmot's default iou_threshold of 0.3. At 30 fps the step is 0.2 m and IoU is about 0.56. Even at 4 m/s, 10 Hz gives IoU of about 0.27, versus 0.68 at 30 fps. Every published DanceTrack, SportsMOT and MOT17 number was run at native video rate (20-30 fps). Deep-EIoU uses a 60-frame lost-track buffer. boxmot 12 defaults count frames (max_age 30, ByteTrack frame_rate 30), so at 10 Hz they silently become 3 s windows.",
+  "applicability": "This is probably the biggest single cause of the 52 mid-pitch births/deaths. Run YOLO on every cam2 frame (30 fps) and every second cam1 frame (60 to 30 fps). Run one boxmot tracker per camera on [x1,y1,x2,y2,conf,cls] boxes. Keep the pitch plane only for cross-camera fusion. For each cam1/cam2 tracklet pair overlapping in time (after the +124.27 s offset), compute the median foot-point distance on the pitch. Merge the pair if it stays under about 1.0-1.5 m (to allow for ~3 px reprojection error plus edge distortion) for at least 1 s. Set max_age to about 60-90 frames (2-3 s at 30 fps). Cost: a 3-minute clip is about 5,400 frames per camera, a few minutes of YOLO on the RTX 2070 SUPER, which is fine offline.",
+  "expected_gain": "high",
+  "effort": "medium",
+  "code": "boxmot 12 is already installed: tracker.update(dets Nx6, frame). No training. Cross-camera tracklet matching is about 50 lines (scipy linear_sum_assignment on median distances).",
+  "sources": [
+   "https://arxiv.org/abs/2203.14360",
+   "https://github.com/mikel-brostrom/boxmot",
+   "https://arxiv.org/html/2306.13074v5"
+  ],
+  "angle": "practical-trackers-reid"
+ },
+ {
+  "technique": "Replace colour histograms and MSMT17-OSNet with a sports-trained ReID model (OSNet x1_0 trained on SportsMOT from Deep-EIoU/GTA). Benchmark it against boxmot's built-in CLIP-ReID",
+  "what_it_does": "Gives each crop an identity embedding learned on athletes, where teammates wear the same kit. Generic person-ReID is trained to tell apart pedestrians with different clothes, and it degrades badly out of domain.",
+  "evidence": "Deep-EIoU ablation, SportsMOT test: adding ReID (OSNet pretrained on Market, then fine-tuned on 31,279 SportsMOT crops) raised HOTA from 71.40 to 75.27 (+3.86); iterative scale-up then reached 77.21. GTA uses the same weights. Generic ReID out of domain (arXiv 2601.20598, 2026): OSNet-x1.0 scores 83.57 mAP on Market (its training domain) but 3.37 on MSMT17 and 19.63 on Duke. CLIP-ReID transfers better (66.22 / 50.59 / 58.28). Raw zero-shot CLIP B/16 and L/14 score 2 mAP or less, and SigLIP2 about 3-14 mAP, so they are not identity features. A Swin ReID model drops from 96.2% rank-1 on Market to 84.1% on SoccerNet. PRTreID paper: a generic BoT model gets 62.63 mAP on SoccerNet ReID versus 72.59 for PRTreID. The authors say identity-only training groups players by attributes such as skin colour rather than team. GTATrack (SoccerTrack 2025 winner) found OSNet beat a SOLIDER transformer on small, low-resolution players (HOTA 0.491 vs 0.474). CLIP-ReIdent: CLIP ViT-L/14 scores 66.8 mAP zero-shot versus 96.9 after fine-tuning on basketball players (crops about 208x102 px).",
+  "applicability": "Download sports_model.pth.tar-60 (torchreid OSNet x1_0) from the Deep-EIoU Drive folder. Rename it to e.g. osnet_x1_0_sportsmot.pt so boxmot builds osnet_x1_0. boxmot's loader reads 'state_dict' and strips 'module.'; check its warning for unmatched keys. A/B test it against osnet_ain_x1_0_msmt17 and clip_market1501.pt (CLIP-ReID ViT-B/16, already in boxmot's model zoo) on your own footage. Positives: crops from one unambiguous tracklet at least 2 s apart. Hard negatives: same-team crops visible in the same frame. Report ROC-AUC and same-team rank-1. Keep colour only for the team label. Far players are 30-80 px tall and get upsampled to 256x128, so take crops from the camera where the player looks largest.",
+  "expected_gain": "high",
+  "effort": "low",
+  "code": "Weights: Deep-EIoU README (Google Drive; the repo states no license). Usable without training through boxmot's ReID backend (osnet_x1_0 / clip). GTA-link uses the same checkpoint.",
+  "sources": [
+   "https://arxiv.org/html/2306.13074v5",
+   "https://github.com/hsiangwei0903/Deep-EIoU",
+   "https://arxiv.org/html/2601.20598",
+   "https://arxiv.org/html/2401.09942v1",
+   "https://arxiv.org/html/2602.00484",
+   "https://arxiv.org/html/2303.11855v1",
+   "https://www.nature.com/articles/s41598-024-51767-4"
+  ],
+  "angle": "practical-trackers-reid"
+ },
+ {
+  "technique": "GTA / GTA-link offline global tracklet association: split impure tracklets with DBSCAN, then connect fragments by hierarchical clustering on pairwise ReID distances",
+  "what_it_does": "Plug-in post-processing for any tracker's output. The splitter runs DBSCAN on the per-box embeddings inside each tracklet and cuts tracklets that contain an ID swap. The connector merges tracklets whose average cosine distance over all box pairs is below a threshold. It forbids merges between tracklets that overlap in time, or whose start/end points are too far apart.",
+  "evidence": "SportsMOT (HOTA / IDF1): SORT 56.28/58.83 to 66.52/77.37. ByteTrack 63.46/70.76 to 69.74/83.16. Deep-EIoU 77.21/79.81 to 81.04/86.51 (AssA 67.63 to 74.51). SoccerNet: ByteTrack 67.30/73.22 to 71.97/82.67; Deep-EIoU 79.41/78.40 to 83.11/84.66. The connector alone gives most of the gain (ByteTrack SportsMOT: 69.51 connector only vs 69.74 with both). SoccerTrack 2025 winner: Deep-EIoU 0.54 to 0.60 HOTA, AssA 0.38 to 0.47; 53 tracklets became 69 after splitting and 27 after connecting. McByte++ (2026): SportsMOT 79.9 to 81.5 HOTA with GTA. Paper parameters: DBSCAN eps 0.6 (cosine), min_samples 5 (repo default 10), max_k 3, min_len 100; merge threshold 0.4; spatial factor 1.0 (SportsMOT) / 0.7 (SoccerNet).",
+  "applicability": "This is essentially your current agglomerative re-linker, with three upgrades: (a) per-box deep embeddings instead of colour histograms, (b) a splitter in front, which matters because greedy tracklets can contain swaps, and (c) average pairwise distance, which tolerates a few bad crops. Run it per camera on boxmot output, then again on fused pitch tracklets. Replace the pixel spatial constraint with pitch metres plus a maximum-speed check (see the constraints finding). The repo targets Python 3.8 with torchreid 1.4 (needs setuptools below 60). On Python 3.14 it is easier to reimplement in about 150 lines with sklearn DBSCAN and boxmot embeddings.",
+  "expected_gain": "high",
+  "effort": "low",
+  "code": "github.com/sjc042/gta-link (MIT). Input is MOT-format txt plus video. No training; the clustering thresholds need tuning.",
+  "sources": [
+   "https://arxiv.org/html/2411.08216v1",
+   "https://github.com/sjc042/gta-link",
+   "https://arxiv.org/html/2602.00484",
+   "https://arxiv.org/html/2608.15688v1"
+  ],
+  "angle": "practical-trackers-reid"
+ },
+ {
+  "technique": "Domain hard constraints in offline linking: team label (yellow bib or not), no overlap in time, physically reachable gaps, at most 5 per team on court, fixed number of identities",
+  "what_it_does": "Turns open-ended clustering into constrained assignment. Two tracklets cannot be one player if their teams differ, they coexist in time, or the gap needs an impossible speed. Long tracklets are then assigned to a fixed set of K about 10-12 identities.",
+  "evidence": "SoccerNet GSR 2025, 2nd place (Constructor.Tech, arXiv 2504.06357): merges only when tracklets do not overlap in time, the gap is physically traversable, and team IDs match. Jersey numbers are used first, then the ReID mean vector and minimum pairwise distance. Result: about 90% fewer tracklets, GS-AssA 82.23. The GSR 2025 report says the winner (KIST) used split-and-merge under identity constraints. Another team (GSR-9) used the bound of at most 24 identities. The report also says tracklet-level voting and merging strongly affect ID consistency. SportsSUSHI (WACV-W 2025): adding pitch coordinates to ReID raised SoccerNet HOTA from 85.79 to 89.22 and AssA from 75.55 to 84.25. The rugby paper by Maglo et al. relies on a closed gallery (known, limited number of players). PRTreID team head: 97.6% rank-1; K-means team accuracy is 91.87% with ReID only.",
+  "applicability": "Your teams split cleanly on a strong cue. Label each tracklet by majority vote of the HSV yellow-pixel fraction in the torso, using the nearer camera (fallback: SigLIP + KMeans with k=2, the Roboflow sports recipe). Cannot-link when: teams differ; times overlap; or gap distance divided by gap time exceeds about 8 m/s plus a homography-error margin. Never allow more than 5 per team at once (handle goalkeepers separately if their kit differs). Final step: Hungarian or ILP assignment of tracklets to K identities instead of a distance threshold. Each decision then has 5 candidates instead of 10, which directly attacks the 49 IDs for 10 players.",
+  "expected_gain": "high",
+  "effort": "low",
+  "code": "No external code needed (numpy, scipy.optimize.linear_sum_assignment, sklearn). Optional team classifier: roboflow/sports TeamClassifier (SigLIP + UMAP + KMeans).",
+  "sources": [
+   "https://arxiv.org/html/2504.06357",
+   "https://arxiv.org/html/2508.19182v1",
+   "https://arxiv.org/html/2502.21242v1",
+   "https://ar5iv.labs.arxiv.org/html/2204.04049",
+   "https://blog.roboflow.com/identify-basketball-players/"
+  ],
+  "angle": "practical-trackers-reid"
+ },
+ {
+  "technique": "Tracker choice in boxmot 12: HybridSort (ReID variant) and DeepOcSort with appearance weight raised as primaries; BoT-SORT/StrongSORT as controls; drop ByteTrack, OC-SORT and ImprAssoc as final trackers",
+  "what_it_does": "Picks the boxmot trackers that do best when appearance is similar and motion is non-linear (DanceTrack/SportsMOT conditions), and sets their parameters for static cameras.",
+  "evidence": "DanceTrack test, HOTA/IDF1: ByteTrack 47.7/53.9; OC-SORT 55.1/54.6; StrongSORT++ 55.6/55.2; Deep OC-SORT 61.3/61.5 (AssA 45.8); Hybrid-SORT 62.2/63.0; Hybrid-SORT-ReID 65.7/67.4. Roboflow re-run with default parameters on DanceTrack: BoT-SORT 57.8, OC-SORT 54.1, ByteTrack 53.3. SportsMOT val, current boxmot README (HOTA/IDF1): HybridSORT 81.14/81.88; StrongSORT 79.80/80.27; DeepOCSORT 79.51/79.59; BoT-SORT 76.93/78.30; OC-SORT 76.34/75.64; BoostTrack 76.32/77.82; ByteTrack 67.93/76.90. MOT17 ablation, boxmot v12 README (HOTA/IDF1 @FPS, precomputed detections and embeddings, hardware not stated): BoostTrack 68.65/81.92 @25; BoT-SORT 68.25/80.62 @46; ByteTrack 67.62/79.19 @1265; StrongSORT 67.39/79.02 @17; DeepOCSORT 67.35/79.58 @12; OC-SORT 66.44/77.89 @1483; ImprAssoc 63.70/70.84 @26. Deep OC-SORT ablation on DanceTrack-val: adding appearance to OC-SORT gave +4.96 HOTA (53.07 to 58.03) and AssA 35.93 to 42.37. CMC gave no gain on static-camera MOT20. The paper used appearance weight aw=1.25, eps=1.0 for DanceTrack (vs 0.75/0.5 for MOT17/20) and alpha_f=0.95. Hybrid-SORT speed on V100: 28 FPS, falling to 15.5 FPS with ReID. BoostTrack++ reports only MOT17/20 (66.6/66.4 HOTA test), with no sports results.",
+  "applicability": "(1) HybridSort: in boxmot it is the ReID variant (long-term ReID bank, HMIoU, TCM, ECC off), with DanceTrack defaults. (2) DeepOcSort(w_association_emb=1.25, aw_param=1.0, alpha_fixed_emb=0.95, cmc_off=True, max_age=60-90, det_thresh about 0.4-0.5) at 30 fps. Gotcha with static tripods: boxmot 12 BotSort, StrongSort and ImprAssoc always run CMC (ECC or sparse optical flow on 1080p frames), which is a main reason for their low FPS and can add jitter. Replace tracker.cmc with a stub whose apply() returns an identity 2x3 warp; passing cmc_method=None crashes. Runtime is not a concern offline: at about 8-16 boxes per frame, even the 12-46 FPS trackers handle a 3-minute clip in minutes. Ultralytics 8.4.174 also includes tracktrack (CVPR 2025), fasttrack and deepocsort configs; I could not verify their benchmark numbers.",
+  "expected_gain": "medium",
+  "effort": "low",
+  "code": "boxmot 12.0.x (installed): HybridSort, DeepOcSort, BotSort, StrongSort, BoostTrack, plus boxmot.gsi interpolation. Ultralytics 8.4 trackers as a second implementation. No training.",
+  "sources": [
+   "https://arxiv.org/html/2505.01257v1",
+   "https://arxiv.org/html/2308.00783",
+   "https://arxiv.org/abs/2302.11813",
+   "https://raw.githubusercontent.com/mikel-brostrom/boxmot/v12.0.2/README.md",
+   "https://github.com/mikel-brostrom/boxmot",
+   "https://trackers.roboflow.com/latest/trackers/comparison/",
+   "https://arxiv.org/html/2408.13003v2"
+  ],
+  "angle": "practical-trackers-reid"
+ },
+ {
+  "technique": "Adapt ReID to each match: self-supervised from tracklets, or few-label closed-set player classification (about 3-6 short labelled tracklets per player)",
+  "what_it_does": "With only about 10-12 identities per game, a small per-match model (fine-tuned ReID, or a classifier on tracklet embeddings) learns cues specific to these players (shoes, socks, hair, build). Positives come from within unambiguous tracklets; negatives come from tracklets visible in the same frame.",
+  "evidence": "Maglo et al., CVPRW 2022 (rugby sevens, offline, about 6 annotated tracklets per player). IDF1 on three games: 76.8, 84.3, 82.2, versus ByteTrack's 48.8, 54.9, 60.3 (about +26 points on average). ID switches 17/21/7 vs 26/23/14. With about 3.5 annotations per player, IDF1 is still about 75%. SUSHI with fine-tuned ReID: SoccerNet AssA 75.55 to 79.36. CLIP-ReIdent: fine-tuning lifts CLIP ViT-L/14 player ReID from 66.8 to 96.9 mAP. CAMELTrack's per-dataset BPBReID scores 81.8 mAP on SportsMOT but only 34.4 on DanceTrack (uniform clothing), which shows how hard same-kit identity is without adaptation.",
+  "applicability": "Step 1 (no labels): from boxmot tracklets, keep the confident, isolated ones as pseudo-identities. Fine-tune OSNet x1_0 (about 2.2M params) for a few epochs with triplet or InfoNCE loss; this takes minutes on the RTX 2070 SUPER. Use same-frame tracklets of the same team as hard negatives. Step 2 (optional labels): a small UI to tag 3-6 short clips per player. The same labels give you the ground truth for IDF1/HOTA with TrackEval, which you currently lack, so every other change here becomes measurable. Then classify tracklets into player IDs instead of clustering.",
+  "expected_gain": "high",
+  "effort": "medium",
+  "code": "No turnkey repo for Maglo's method (rugby dataset released). Use torchreid or boxmot OSNet backbones plus a small PyTorch training loop; sklearn/TrackEval for evaluation.",
+  "sources": [
+   "https://ar5iv.labs.arxiv.org/html/2204.04049",
+   "https://arxiv.org/html/2502.21242v1",
+   "https://arxiv.org/html/2303.11855v1",
+   "https://arxiv.org/html/2505.01257v1"
+  ],
+  "angle": "practical-trackers-reid"
+ },
+ {
+  "technique": "Embedding quality gating plus temporal aggregation: confidence-gated EMA online; tracklet galleries with mean and minimum/percentile pairwise distance offline; best-view camera selection",
+  "what_it_does": "Stops occluded, truncated, blurred or tiny crops from contaminating identity features, and summarises each tracklet robustly rather than by its latest frame.",
+  "evidence": "StrongSORT ablation (MOT17-val): replacing the feature bank with an EMA update (alpha=0.9) gave +0.4 IDF1 and +1.2 FPS. Deep OC-SORT dynamic appearance: alpha_t = alpha_f + (1-alpha_f)(1-(s_det-sigma)/(1-sigma)), with alpha_f=0.95, so low-confidence (occluded) detections barely update the track. On DanceTrack-val this adds +0.33 HOTA on top of a fixed EMA. CAMELTrack, SportsMOT-val: EMA appearance alone reaches 76.0 HOTA versus 79.2 with a learned temporal encoder, so better temporal aggregation is worth about 3 HOTA. McByte++ keeps one averaged descriptor per finished tracklet for re-entry (cosine threshold 0.8, mutual best match). The Constructor.Tech GSR pipeline uses both the tracklet mean and the minimum pairwise distance. GTA averages over all box pairs.",
+  "applicability": "Embed a crop only when: it overlaps no other box (IoU < 0.1, and no other foot point within about 1 m on the pitch); the box is at least about 60 px tall; it is not at a frame edge (distortion or truncation); and it comes from whichever camera shows the player larger or less occluded. The two diagonal cameras make this choice possible. Weight crops by detector confidence. Per tracklet, keep the mean plus 5-10 medoid embeddings. Linking cost = min(mean distance, 20th-percentile pairwise distance). Online inside boxmot, DeepOcSort already applies the confidence-gated EMA.",
+  "expected_gain": "medium",
+  "effort": "low",
+  "code": "Built into boxmot DeepOcSort (alpha_fixed_emb) and StrongSort (ema_alpha). The offline part is a few dozen lines of numpy.",
+  "sources": [
+   "https://arxiv.org/abs/2202.13514",
+   "https://arxiv.org/abs/2302.11813",
+   "https://arxiv.org/html/2505.01257v1",
+   "https://arxiv.org/html/2608.15688v1",
+   "https://arxiv.org/html/2504.06357"
+  ],
+  "angle": "practical-trackers-reid"
+ },
+ {
+  "technique": "Deep-EIoU: expansion IoU with an iterative scale-up schedule plus ReID, no Kalman filter (the sports-specific online association recipe)",
+  "what_it_does": "Enlarges both boxes by a scale E before computing IoU, so fast, direction-changing players still overlap their next detection. Association is iterative: confident matches are taken at a small expansion, then the expansion grows for the rest. It drops the linear-motion Kalman assumption.",
+  "evidence": "SportsMOT test: 77.2 HOTA / 79.8 IDF1 / 67.7 AssA, versus OC-SORT 73.7, MixSort-OC 74.1, BoT-SORT 68.7, ByteTrack 64.1. SoccerNet with oracle detections: 85.44 HOTA vs OC-SORT 78.09 and BoT-SORT 77.00. As a drop-in, EIoU lifts ByteTrack from 62.8 to 67.5 and BoT-SORT from 68.7 to 71.3 HOTA. Parameters: E starts at 0.7 and rises 0.1 per iteration over 2 iterations (high-score stage); 0.7 for low-score; 0.5 for unmatched; tau_A 0.25; tau_EIoU 0.5; 60-frame buffer. About 14.6 FPS on an RTX 4080 for the full pipeline. Used by the SoccerNet GSR 2025 winner (KIST) and the SoccerTrack 2025 winner, where it went from ByteTrack's 0.42 HOTA and 630 IDSW to 0.54 HOTA and 325.5 IDSW.",
+  "applicability": "Not in boxmot 12. It is about 50 lines on top of boxmot BotSort's matching (expand both boxes, loop over scales) or the original repo with your detections. It suits small far-side boxes in cam2, where relative displacement per frame is large, and sudden cuts where a Kalman filter overshoots. The pitch-plane analogue is a distance gate that grows with time since last seen, which you can also add to the fused tracker.",
+  "expected_gain": "medium",
+  "effort": "medium",
+  "code": "github.com/hsiangwei0903/Deep-EIoU (Python 3.7 / torch 1.13 environment, no license stated). Includes a demo for custom video; the ReID weights are the sports OSNet from the ReID finding above.",
+  "sources": [
+   "https://arxiv.org/html/2306.13074v5",
+   "https://github.com/hsiangwei0903/Deep-EIoU",
+   "https://arxiv.org/html/2602.00484",
+   "https://arxiv.org/html/2508.19182v1"
+  ],
+  "angle": "practical-trackers-reid"
+ },
+ {
+  "technique": "Part-based and lower-body descriptors: separate stripe or part embeddings, with the bib or torso region masked or down-weighted",
+  "what_it_does": "The bib covers the torso, so a global embedding mostly encodes team. Part-based features (head/hair, shorts, legs/socks/shoes) keep the cues that differ between teammates and hold up better under partial occlusion.",
+  "evidence": "PRTreID (MMSports 2023), SoccerNet-Tracking with ground-truth detections: part-based tracklet linking reaches 90.84 HOTA / 82.03 AssA, versus 85.7 / 77.25 with global features. On SoccerNet ReID, part-based BPBReID scores 71.43 mAP versus 62.63 (BoT) and 63.61 (PCB); PRTreID scores 72.59. With YOLOv8 detections, PRT-Track scores 59.77 HOTA / 74.44 IDF1 vs StrongSORT 54.86 / 65.1. The CLIP-ReIdent authors note that with identical kits, shirt number, shoes and face become the important cues. Gap: no published ablation isolates lower-body or shoe features for sports ReID, so validate on your own data.",
+  "applicability": "Compute 2-3 horizontal-stripe embeddings with the same OSNet (upper body/head, shorts, lower legs and shoes), or use YOLO-pose keypoints to crop the bib out. Within a team, weight the lower stripes more. At 30-80 px tall, shoes are only a few pixels, so use these features only from the nearer camera. Adopt them only if the same-team verification AUC (from the ReID finding above) improves.",
+  "expected_gain": "medium",
+  "effort": "medium",
+  "code": "BPBReID / PRTreID: github.com/VlSomers/Prtreid (Hippocratic licence; weights and training via SoccerNet sn-gamestate/TrackLab, not standalone). KPR from the same group for occlusion. Stripe pooling on boxmot OSNet needs no training.",
+  "sources": [
+   "https://arxiv.org/html/2401.09942v1",
+   "https://github.com/VlSomers/Prtreid",
+   "https://arxiv.org/html/2303.11855v1"
+  ],
+  "angle": "practical-trackers-reid"
+ },
+ {
+  "technique": "McByte / McByte++: training-free ByteTrack-style tracking that uses propagated segmentation masks only when IoU matching is ambiguous",
+  "what_it_does": "Propagates a mask per track (Cutie in McByte; EdgeTAM in McByte++). When several track-detection pairs are ambiguous by IoU, it subtracts the mask-box overlap from the cost. That separates crossing players whose boxes overlap. McByte++ adds an OSNet ReID check when a new tracklet starts, for re-entries.",
+  "evidence": "DanceTrack test: McByte 67.1 HOTA / 68.1 IDF1, vs Hybrid-SORT 65.7, Deep OC-SORT 61.3, ByteTrack 47.7. SoccerNet: 85.0 vs OC-SORT 82.0. Ablation on DanceTrack-val: 47.1 to 62.3 HOTA when the mask is gated to ambiguous cases; using the mask everywhere hurts IDF1. Roboflow re-run with default parameters: DanceTrack 67.2 vs BoT-SORT 57.8; SportsMOT 76.5 vs 73.8. Speed: McByte 1.0-3.6 FPS. McByte++ (arXiv Aug 2026) runs 8.7-19 FPS; SportsMOT 79.9 HOTA online and 81.5 with GTA; SoccerNet 87.5 and 88.6 with GTA.",
+  "applicability": "Per camera only (image space), and well suited to fixed tripods with frequent crossings. At 30 fps a 3-minute clip is about 5,400 frames per camera, roughly 25-90 min at 1-3.6 FPS, which is acceptable offline. On the 8 GB RTX 2070 SUPER, lower Cutie's max_internal_size. Check that the SAM/Cutie dependencies install on Python 3.14; otherwise use a separate env. Feed it your YOLO detections (--det_path) and still follow with GTA-style linking.",
+  "expected_gain": "medium",
+  "effort": "medium",
+  "code": "github.com/tstanczyk95/McByte (MIT, custom detections supported). pip install \"trackers[mask]\" (Roboflow trackers v2.6+, McByteTracker). McByte++ code is only announced (github tstanczyk95/McBytePlusPlus).",
+  "sources": [
+   "https://arxiv.org/html/2409.14220v3",
+   "https://github.com/tstanczyk95/McByte",
+   "https://trackers.roboflow.com/latest/trackers/comparison/",
+   "https://arxiv.org/html/2608.15688v1"
+  ],
+  "angle": "practical-trackers-reid"
+ },
+ {
+  "technique": "CAMELTrack: learned multi-cue association (transformer over appearance, box and keypoint cues), for later once some labelled footage exists",
+  "what_it_does": "Replaces hand-tuned cost fusion (IoU + EMA appearance) with a small trained association model on top of off-the-shelf detection and ReID. It learns when to trust appearance and when to trust motion, which matters during occlusions and among look-alikes.",
+  "evidence": "DanceTrack test: 66.1 HOTA (69.3 with keypoints) vs Deep OC-SORT 61.3 and Hybrid-SORT 65.7. SportsMOT test: 80.4 HOTA / 84.8 IDF1 vs Deep-EIoU 77.2 / 79.8. Oracle study: perfect association with the same cues would add 15.5 HOTA on DanceTrack and 8.3 on SportsMOT, so the headroom is in association, not detection. Training takes about 1 hour on one consumer GPU. Full pipeline about 13 FPS on MOT17. It uses BPBReID with a SOLIDER Swin backbone (81.8 mAP on SportsMOT) and RTMPose.",
+  "applicability": "This matches your diagnosis that recall is not the bottleneck. It needs labelled tracks to train (the labels from the per-match adaptation finding), or try the SportsMOT checkpoint zero-shot per camera. It is an online tracker, so you would still run the GTA-style offline linking and constraint stages after it. Lower priority until simpler fixes are measured.",
+  "expected_gain": "medium",
+  "effort": "high",
+  "code": "github.com/TrackingLaboratory/CAMELTrack (TrackLab-based). Training required for best results.",
+  "sources": [
+   "https://arxiv.org/html/2505.01257v1",
+   "https://arxiv.org/abs/2505.01257"
+  ],
+  "angle": "practical-trackers-reid"
+ }
+]
