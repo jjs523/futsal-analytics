@@ -87,7 +87,7 @@ def contact_sheet(path: str, out_jpg: str, n: int = 9, width: int = 640) -> list
     return stats
 
 
-def check(paths: list[str], out_dir: str, sync_window: float = 120.0, max_lag: float = 30.0) -> dict:
+def check(paths: list[str], out_dir: str, max_lag: float | None = None) -> dict:
     os.makedirs(out_dir, exist_ok=True)
     report = {"videos": []}
     for p in paths:
@@ -102,7 +102,8 @@ def check(paths: list[str], out_dir: str, sync_window: float = 120.0, max_lag: f
         hint = sync.start_hint(paths[0], paths[1]) or 0.0
         try:
             sr = 16000
-            r = sync.align(sync.read_audio(paths[0], sr), sync.read_audio(paths[1], sr), sr, sync_window, max_lag, hint)
+            lag = max_lag if max_lag is not None else (5.0 if hint else 30.0)
+            r = sync.align_segments(sync.read_audio(paths[0], sr), sync.read_audio(paths[1], sr), sr, hint, lag)
             r["hint"] = hint
             report["sync"] = r
         except Exception as e:          # ffmpeg 없음, 소리 없음 등
@@ -137,9 +138,8 @@ def warnings(report: dict) -> list[str]:
                  "검출은 초당 같은 횟수로(rate_hz) 맞춤")
     s = report.get("sync")
     if s and "error" not in s:
-        confs = [c for c in (s.get("conf_start"), s.get("conf_end")) if c is not None]
-        if confs and min(confs) < 6:
-            w.append("소리로 맞춘 시간 차의 신뢰도가 낮음 (6 미만): 손뼉 장면을 보고 직접 확인 필요")
+        if s.get("n_used", 0) < 5 or (s.get("stderr") or 1) > 0.05:
+            w.append("소리로 맞춘 시간 차가 불확실함 (일치 구간이 적거나 흩어짐): python -m futsal.syncview 로 장면 확인 필요")
         if s.get("drift") and abs(s["drift"]) > 300e-6:
             w.append(f"시계 속도 차이가 큼 ({s['drift'] * 1e6:+.0f} ppm): 끝 구간 손뼉을 확인")
     elif s:
@@ -169,9 +169,8 @@ def render(report: dict) -> str:
             lines.append(f"- 실패: {s['error']} (파일 이름 기준 대략 차이 {s['hint']:+.0f}s)")
         else:
             lines.append(f"- 파일 이름 기준 대략 차이: {s['hint']:+.0f}s")
-            lines.append(f"- 시작 구간: {s['offset_start']:+.3f}s (신뢰도 {s['conf_start']:.1f})")
-            if s.get("offset_end") is not None:
-                lines.append(f"- 끝 구간: {s['offset_end']:+.3f}s (신뢰도 {s['conf_end']:.1f}), 시계 속도 차이 {s['drift'] * 1e6:+.0f} ppm")
+            se = f", 표준오차 {s['stderr']:.3f}s" if s.get("stderr") is not None else ""
+            lines.append(f"- 1분 구간 {s['n_windows']}개 중 {s['n_used']}개 일치{se}, 시계 속도 차이 {s['drift'] * 1e6:+.0f} ppm")
             lines.append(f"- 분석에 넣을 값: {{\"offset\": {s['offset']:.3f}, \"drift\": {s['drift']:.3e}}}")
         lines.append("")
     lines.append("## 주의")
@@ -183,11 +182,10 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog="python -m futsal.check", description="촬영 영상 점검")
     ap.add_argument("videos", nargs="+", help="영상 1~2개 (두 개면 첫 번째가 기준)")
     ap.add_argument("--out", default="check_report")
-    ap.add_argument("--window", type=float, default=120.0, help="시간 맞추기에 쓸 시작·끝 구간 길이(초)")
-    ap.add_argument("--max-lag", type=float, default=30.0, help="파일 이름 기준 차이에서 더 찾아볼 범위(초)")
+    ap.add_argument("--max-lag", type=float, default=None, help="파일 이름 기준 차이에서 더 찾아볼 범위(초, 기본 5)")
     a = ap.parse_args(argv)
     print("점검 중... (긴 영상은 소리 읽기에 몇 분 걸립니다)")
-    report = check(a.videos, a.out, a.window, a.max_lag)
+    report = check(a.videos, a.out, a.max_lag)
     print(render(report))
     print(f"→ {a.out}/report.txt 와 *_sheet.jpg 를 공유해 주세요")
 

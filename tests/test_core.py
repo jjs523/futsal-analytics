@@ -173,3 +173,31 @@ def test_detection_rate_is_per_second_whatever_the_frame_rate(tmp_path):
         dets, _, _ = detect_video(path, lambda f: [(10, 10, 20, 40, 0.9, None)], rate_hz=10)
         counts[fps] = len(dets)
     assert counts[30] == counts[60] == 30
+
+
+def _game_audio_no_claps(seconds, off, sr, rng, spread=0.13):
+    """Match sound without claps: many similar strikes and voices, a third heard only by one phone, and each shared
+    sound reaching the two phones (~45 m apart) up to +-`spread` s apart depending on where it was made."""
+    a = rng.normal(0, 0.05, int(seconds * sr))
+    b = rng.normal(0, 0.05, int((seconds - off - 10) * sr))
+    for t in rng.uniform(0, seconds, int(seconds * 3)):
+        s = rng.normal(0, 1, 300) * np.exp(-np.arange(300) / 80) * rng.uniform(0.1, 0.6)
+        who = rng.random()
+        i, j = int(t * sr), int((t + rng.uniform(-spread, spread) - off) * sr)
+        if who > 0.3 and i + 300 <= len(a):
+            a[i:i + 300] += s
+        if (who < 0.3 or who > 0.6) and 0 <= j and j + 300 <= len(b):
+            b[j:j + 300] += s
+    return a, b
+
+
+def test_align_segments_without_claps():
+    from futsal.sync import align_segments
+    sr = 8000
+    errs = []
+    for seed in range(3):
+        a, b = _game_audio_no_claps(1500, 124.29, sr, np.random.default_rng(seed))
+        r = align_segments(a, b, sr, hint_s=123.0, max_lag_s=5.0)
+        errs.append(abs(r["offset"] - 124.29))
+        assert r["n_used"] >= 15 and r["stderr"] < 0.03
+    assert max(errs) < 0.05

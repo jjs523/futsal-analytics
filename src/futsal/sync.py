@@ -57,6 +57,61 @@ def align(a: np.ndarray, b: np.ndarray, sample_rate: int, window_s: float = 120.
     return res
 
 
+def align_segments(a: np.ndarray, b: np.ndarray, sample_rate: int, hint_s: float = 0.0, max_lag_s: float = 5.0,
+                   seg_s: float = 60.0, fine_lag_s: float = 1.0, min_conf: float = 3.0) -> dict:
+    """Robust version of `align` for recordings without claps: the offset is measured in every `seg_s` window of
+    the overlap (searching +-`max_lag_s` around `hint_s`), and the median over windows is taken.
+    One window alone can lock onto a wrong, similar-looking sound, and with the phones ~45 m apart each sound
+    reaches them up to +-0.13 s apart depending on where it was made; the median over the whole match cancels both.
+    A second pass searches only +-`fine_lag_s` around the first answer and fits offset + drift through the
+    windows that agree (least squares after dropping outliers; a median alone would snap to the 16 ms hop grid).
+    Same result keys as `align`, plus `n_used`, `n_windows` and `stderr`."""
+    sr = sample_rate
+    dur_a, dur_b = len(a) / sr, len(b) / sr
+
+    def measure(centre_of, lag):
+        rows = []
+        t_b = max(0.0, -hint_s) + lag
+        while t_b + seg_s + lag <= dur_b:
+            guess = centre_of(t_b)                               # offset expected for this window
+            t_a = t_b + guess
+            if t_a - lag < 0 or t_a + seg_s + lag > dur_a:
+                t_b += seg_s
+                continue
+            ia, ib = int((t_a - lag) * sr), int(t_b * sr)        # a: window with `lag` margin on both sides
+            local, conf = estimate_offset(a[ia:ia + int((seg_s + 2 * lag) * sr)], b[ib:ib + int(seg_s * sr)], sr, 2 * lag)
+            rows.append((t_b + seg_s / 2, local + (t_a - lag) - t_b, conf))
+            t_b += seg_s
+        return np.array(rows).reshape(-1, 3)
+
+    first = measure(lambda t: hint_s, max_lag_s)
+    good = first[first[:, 2] >= min_conf] if len(first) else first
+    if len(good) == 0:
+        good = first
+    if len(good) == 0:
+        raise ValueError("the two recordings do not overlap (check hint_s)")
+    o1 = float(np.median(good[:, 1]))
+    second = measure(lambda t: o1, fine_lag_s)
+    ok = second[(second[:, 2] >= min_conf) & (np.abs(second[:, 1] - o1) < 0.5)] if len(second) else second
+    if len(ok) < 3:
+        return {"offset": o1, "drift": 0.0, "offset_start": o1, "conf_start": float(np.median(good[:, 2])),
+                "offset_end": None, "conf_end": None, "n_used": int(len(ok)), "n_windows": int(len(second)), "stderr": None}
+    t, o = ok[:, 0], ok[:, 1]
+    keep = np.abs(o - np.median(o)) < 3 * 1.4826 * np.median(np.abs(o - np.median(o))) + 1e-3   # drop outliers (MAD)
+    t, o = t[keep], o[keep]
+    drift, offset = 0.0, float(np.mean(o))
+    if len(t) >= 6 and t.max() - t.min() > 600:     # straight line through the windows, kept only if the drift is
+        (d, c), cov = np.polyfit(t, o, 1, cov=True)  # clearly measurable (otherwise its noise would shift the offset)
+        if abs(d) > 2.5 * np.sqrt(cov[0, 0]):
+            drift, offset = float(d), float(c)
+    resid = o - (offset + drift * t)
+    stderr = float(np.std(resid) / np.sqrt(len(resid)))
+    return {"offset": offset, "drift": drift,
+            "offset_start": offset + drift * float(t.min()), "conf_start": float(np.median(ok[:, 2])),
+            "offset_end": offset + drift * float(t.max()), "conf_end": float(np.median(ok[:, 2])),
+            "n_used": int(len(t)), "n_windows": int(len(second)), "stderr": stderr}
+
+
 _HOP = 256
 
 
@@ -112,36 +167,51 @@ def main(argv=None):
     """python -m futsal.sync cam1.mp4 cam2.mp4  ->  cam2 시각을 cam1 시각으로 바꾸는 식"""
     import argparse
     import json
+    import os
     ap = argparse.ArgumentParser(prog="python -m futsal.sync", description="두 폰 영상의 시간 차이를 소리로 계산")
     ap.add_argument("ref", help="기준 영상 (cam1)")
     ap.add_argument("other", help="맞출 영상 (cam2)")
-    ap.add_argument("--window", type=float, default=120.0, help="시작·끝에서 비교할 구간 길이(초)")
-    ap.add_argument("--max-lag", type=float, default=30.0, help="두 영상 시작 차이의 최대값(초)")
     ap.add_argument("--hint", type=float, default=None,
                     help="대략적인 시작 차이(초, other가 늦게 시작하면 +). 생략하면 파일 이름의 녹화 시각으로 계산")
+    ap.add_argument("--max-lag", type=float, default=None,
+                    help="대략적인 차이에서 더 찾아볼 범위(초). 기본: 파일 이름으로 잡았으면 5, 아니면 30")
+    ap.add_argument("--segment", type=float, default=60.0, help="한 번에 비교할 구간 길이(초)")
+    ap.add_argument("--method", choices=["segments", "ends"], default="segments",
+                    help="segments: 경기 전체를 1분씩 재서 중앙값 (손뼉 없어도 됨, 기본) / ends: 시작·끝 2분만 (손뼉 필요)")
     ap.add_argument("--json", action="store_true")
     a = ap.parse_args(argv)
     sr = 16000
-    hint = a.hint if a.hint is not None else (start_hint(a.ref, a.other) or 0.0)
-    if hint:
-        print(f"대략적인 시작 차이 {hint:+.0f} s 주변 ±{a.max_lag:.0f} s에서 찾습니다")
-    res = align(read_audio(a.ref, sr), read_audio(a.other, sr), sr, a.window, a.max_lag, hint)
+    from_name = start_hint(a.ref, a.other)
+    hint = a.hint if a.hint is not None else (from_name or 0.0)
+    lag = a.max_lag if a.max_lag is not None else (5.0 if (a.hint is not None or from_name is not None) else 30.0)
+    print(f"대략적인 시작 차이 {hint:+.0f} s 주변 ±{lag:.0f} s에서 찾습니다 (소리 읽는 중, 긴 영상은 몇 분 걸림)")
+    xa, xb = read_audio(a.ref, sr), read_audio(a.other, sr)
+    if a.method == "ends":
+        res = align(xa, xb, sr, 120.0, lag, hint)
+    else:
+        res = align_segments(xa, xb, sr, hint, lag, a.segment)
     res["hint"] = hint
     res["creation_time"] = {"ref": creation_time(a.ref), "other": creation_time(a.other)}
     if a.json:
         print(json.dumps(res, ensure_ascii=False, indent=1))
         return
-    print(f"시작 구간 시간 차: {res['offset_start']:+.3f} s  (신뢰도 {res['conf_start']:.1f})")
-    if res["offset_end"] is not None:
-        print(f"끝 구간 시간 차:   {res['offset_end']:+.3f} s  (신뢰도 {res['conf_end']:.1f})")
-        print(f"시계 속도 차이:    {res['drift'] * 1e6:+.0f} ppm")
-    import os
     ra, rb = os.path.basename(a.ref), os.path.basename(a.other)
+    if "n_used" in res:
+        se = f", 표준오차 {res['stderr']:.3f} s" if res["stderr"] is not None else ""
+        print(f"구간 {res['n_windows']}개 중 {res['n_used']}개가 일치{se}")
+    else:
+        print(f"시작 구간 시간 차: {res['offset_start']:+.3f} s  (신뢰도 {res['conf_start']:.1f})")
+        if res["offset_end"] is not None:
+            print(f"끝 구간 시간 차:   {res['offset_end']:+.3f} s  (신뢰도 {res['conf_end']:.1f})")
+    print(f"시계 속도 차이:    {res['drift'] * 1e6:+.0f} ppm" + ("  (측정 오차 안이라 0으로 둠)" if "n_used" in res and res["drift"] == 0 else ""))
     print(f"=> {ra} 시각 = {rb} 시각 {res['offset']:+.3f} s {res['drift']:+.2e} x ({rb} 시각)")
     print(f"   분석에 넣을 값: {{\"offset\": {res['offset']:.3f}, \"drift\": {res['drift']:.3e}}}")
-    if min(c for c in (res["conf_start"], res["conf_end"]) if c is not None) < 6:
+    if "n_used" in res:
+        if res["n_used"] < 5 or (res["stderr"] or 1) > 0.05:
+            print("주의: 일치하는 구간이 적거나 흩어져 있습니다. python -m futsal.syncview 로 장면을 보고 확인하세요.")
+    elif min(c for c in (res["conf_start"], res["conf_end"]) if c is not None) < 6:
         print("주의: 신뢰도가 낮습니다 (6 미만). 손뼉 장면이나 시계 화면으로 직접 확인하세요.")
-    print(f"녹화 시작 시각(메타데이터): {res['creation_time']}")
+    print(f"녹화 시각(메타데이터, 삼성은 종료 시각): {res['creation_time']}")
 
 
 if __name__ == "__main__":
