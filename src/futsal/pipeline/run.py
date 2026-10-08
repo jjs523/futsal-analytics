@@ -5,7 +5,7 @@ import numpy as np
 
 from ..court import Court
 from ..fusion import Observation, fuse_frame
-from ..homography import Calibration
+from ..homography import Calibration, CalibrationTimeline, calibration_at
 from ..tracks import TrackSet
 from . import pitch_tracker
 from .detect import Detection, dequantize
@@ -20,16 +20,21 @@ def clock(sync) -> tuple[float, float]:
     return float(sync or 0.0), 0.0
 
 
-def to_observations(dets: list[Detection], cal: Calibration, camera: str, offset_s, fps_out: float,
+def to_observations(dets: list[Detection], cal: Calibration | CalibrationTimeline, camera: str, offset_s, fps_out: float,
                     court: Court, margin: float = 1.0) -> dict[int, list[Observation]]:
     """Pixels -> pitch, map the camera's clock onto the reference clock, bucket to the output frame grid.
-    Points far outside the pitch (spectators, subs on the bench) are dropped."""
+    Points far outside the pitch (spectators, subs on the bench) are dropped. `cal` may be a timeline
+    [(from_s, Calibration), ...] (camera's own seconds) when the tripod was knocked during the match."""
     offset, drift = clock(offset_s)
     if not dets:
         return {}
     uv = np.array([[d.u, d.v] for d in dets])
-    xy = cal.to_pitch(uv)
-    sig = DETECTOR_JITTER_PX * cal.metres_per_pixel(uv)
+    xy, sig = np.zeros_like(uv), np.zeros(len(dets))
+    which = [id(calibration_at(cal, d.t)) for d in dets]
+    for c in {id(c): c for c in (calibration_at(cal, d.t) for d in dets)}.values():
+        m = np.array([w == id(c) for w in which])
+        xy[m] = c.to_pitch(uv[m])
+        sig[m] = DETECTOR_JITTER_PX * c.metres_per_pixel(uv[m])
     inside = court.contains(xy, margin)
     out: dict[int, list[Observation]] = {}
     for d, p, s, ok in zip(dets, xy, sig, inside):
@@ -42,7 +47,7 @@ def to_observations(dets: list[Detection], cal: Calibration, camera: str, offset
     return out
 
 
-def build_tracks(court: Court, detections: dict[str, list[Detection]], calibrations: dict[str, Calibration],
+def build_tracks(court: Court, detections: dict[str, list[Detection]], calibrations: dict[str, Calibration | CalibrationTimeline],
                  offsets: dict | None = None, fps_out: float = 10.0, gate: float = 1.0, ids: str = "appearance") -> TrackSet:
     """ids="appearance": short unambiguous tracklets re-linked over the whole match with appearance + motion
     (pitch_tracker.tracklets / associate). ids="motion": the older motion-only tracker + gap stitching."""

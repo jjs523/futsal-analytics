@@ -29,6 +29,12 @@ class Calibration:
     def metres_per_pixel(self, uv) -> np.ndarray:
         return metres_per_pixel(self.H, uv)
 
+    def shifted(self, dx: float, dy: float) -> "Calibration":
+        """The same camera after it was nudged and the picture slid by (dx, dy) pixels (what was at u is now at
+        u + dx). Good for small knocks of the tripod; re-tap the keypoints if the view also rotated or zoomed."""
+        T = np.array([[1.0, 0.0, -dx], [0.0, 1.0, -dy], [0.0, 0.0, 1.0]])
+        return Calibration(self.H @ T, self.rms_px, list(self.used))
+
     def to_json(self) -> dict:
         return {"H": self.H.tolist(), "rms_px": self.rms_px, "used": self.used}
 
@@ -75,3 +81,25 @@ def calibrate(taps: dict[str, tuple[float, float]], court: Court, ransac_px: flo
     back = image_to_pitch(H_wi, world[keep])
     rms = float(np.sqrt(np.mean(np.sum((back - img[keep]) ** 2, 1))))
     return Calibration(H=H, rms_px=rms, used=[n for n, k in zip(names, keep) if k])
+
+
+# A camera that was moved during the match: [(from_s, Calibration), ...] sorted by start time on that camera's own
+# clock (video seconds), e.g. [(0, before), (160.0, after)] for a tripod knocked at 2:40.
+CalibrationTimeline = list[tuple[float, Calibration]]
+
+
+def calibration_at(cal: "Calibration | CalibrationTimeline", t: float) -> Calibration:
+    if isinstance(cal, Calibration):
+        return cal
+    current = cal[0][1]
+    for start, c in cal:
+        if t >= start:
+            current = c
+    return current
+
+
+def timeline_from_json(d) -> "Calibration | CalibrationTimeline":
+    """{"H": ...} for one calibration, or [{"from": seconds, "H": ...}, ...] when the camera moved."""
+    if isinstance(d, list):
+        return sorted(((float(x.get("from", 0.0)), Calibration.from_json(x)) for x in d), key=lambda p: p[0])
+    return Calibration.from_json(d)

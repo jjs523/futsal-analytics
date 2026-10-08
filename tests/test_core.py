@@ -201,3 +201,22 @@ def test_align_segments_without_claps():
         errs.append(abs(r["offset"] - 124.29))
         assert r["n_used"] >= 15 and r["stderr"] < 0.03
     assert max(errs) < 0.05
+
+
+def test_calibration_timeline_for_a_knocked_tripod():
+    from futsal.homography import Calibration, calibration_at, timeline_from_json
+    from futsal.pipeline.detect import Detection
+    from futsal.pipeline.run import to_observations
+    court = Court()
+    H = np.array([[0.02, 0.001, -5.0], [0.0005, 0.05, -10.0], [0.0, 0.0001, 1.0]])
+    before = Calibration(H, 1.0)
+    after = before.shifted(-41, -19)                                     # cam1 at 2:40: picture slid 41 px left, 19 up
+    u, v = 900.0, 500.0
+    p = before.to_pitch([[u, v]])[0]
+    assert np.allclose(after.to_pitch([[u - 41, v - 19]])[0], p)
+    tl = timeline_from_json([{"from": 160.0, **after.to_json()}, {"from": 0, **before.to_json()}])
+    assert calibration_at(tl, 100.0) is tl[0][1] and calibration_at(tl, 200.0) is tl[1][1]
+    dets = [Detection(0, 100.0, u, v, 0.9, None, 60.0, None), Detection(1, 200.0, u - 41, v - 19, 0.9, None, 60.0, None)]
+    obs = to_observations(dets, tl, "cam1", 0.0, 10.0, court, margin=50)
+    pts = [o.xy for k in sorted(obs) for o in obs[k]]
+    assert len(pts) == 2 and np.allclose(pts[0], pts[1])               # same pitch spot before and after the knock
