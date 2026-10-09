@@ -230,6 +230,7 @@ class XviewStats:
     candidates: int = 0             # pairs sharing >= min_shared samples
     accepted: int = 0               # ... passing the distance / inside / team gates
     rejected_team: int = 0
+    team_overridden: int = 0        # team contradiction overruled by matching appearance
     windows: int = 0                # distinct sets of simultaneously active accepted pairs
     paired_samples: int = 0         # (cam-1, cam-2) sample pairs fused
     ambiguous_samples: int = 0      # left unpaired because a swapped assignment was within tie_m
@@ -273,9 +274,19 @@ def _solve(cost: dict[tuple, float], unpaired: float, forbid: tuple | None = Non
     return {(A[i], B[j]): float(M[i, j]) for i, j in zip(r, c) if i < na and j < nb and M[i, j] < big}, total
 
 
+def _mean_reid(cams: dict[str, CamBoxes], boxes: list[tuple[str, int]], min_conf: float = 0.4) -> np.ndarray | None:
+    feats = [cams[cam].reid[i] for cam, i in boxes
+             if cams[cam].reid is not None and cams[cam].conf[i] >= min_conf and np.any(cams[cam].reid[i])]
+    if not feats:
+        return None
+    m = np.mean(feats, axis=0)
+    return m / max(float(np.linalg.norm(m)), 1e-9)
+
+
 def pair_views(t1: list[Track], t2: list[Track], cams: dict[str, CamBoxes], min_shared: int = 10, gate_m: float = 1.0,
                min_inside: float = 0.7, cut_on_partner_change: bool = True, tie_m: float = 0.1,
-               sigma_gate: float = 0.0, stats: XviewStats | None = None) -> list[Track]:
+               sigma_gate: float = 0.0, team_override_sim: float | None = 0.75,
+               stats: XviewStats | None = None) -> list[Track]:
     """Fuse one camera's single-view tracklets t1 with the other camera's t2.
 
     Candidates share >= min_shared samples; cost = median pitch distance over the shared samples. A pair is accepted
@@ -287,7 +298,13 @@ def pair_views(t1: list[Track], t2: list[Track], cams: dict[str, CamBoxes], min_
     (cut_on_partner_change), so each output tracklet has at most one partner per camera. Deciding per tracklet pair
     (evidence over >= 1 s) instead of per frame means one bad frame cannot fuse two players.
     Fused points carry both boxes and the inverse-variance (sigma) mean position. Every input box ends up in exactly
-    one output tracklet."""
+    one output tracklet.
+
+    A team contradiction is overruled when the two tracklets also look alike (cosine of their mean ReID >=
+    `team_override_sim`): staying together on the pitch for >= 1 s AND the same appearance is stronger evidence than
+    shirt colour, which phones render differently (10/8 test: a yellow bib close to one phone read as the no-bib
+    team, so the two views of one player were kept apart and became two identities). None = the plain team gate of
+    the research code."""
     st = stats if stats is not None else XviewStats()
     tr = {("1", i): t for i, t in enumerate(t1)} | {("2", i): t for i, t in enumerate(t2)}
     box = {key: {k: _single(p) for k, p in t.items()} for key, t in tr.items()}
@@ -324,8 +341,12 @@ def pair_views(t1: list[Track], t2: list[Track], cams: dict[str, CamBoxes], min_
         if med > gate or (d <= 2 * gate).mean() < min_inside:
             continue
         if team[a] and team[b] and team[a] != team[b]:
-            st.rejected_team += 1
-            continue
+            ea = _mean_reid(cams, list(box[a].values())) if team_override_sim is not None else None
+            eb = _mean_reid(cams, list(box[b].values())) if ea is not None else None
+            if eb is None or float(ea @ eb) < team_override_sim:
+                st.rejected_team += 1
+                continue
+            st.team_overridden += 1
         cost[(a, b)] = med
         st.medians.append(med)
     st.accepted = len(cost)

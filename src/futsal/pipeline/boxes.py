@@ -218,9 +218,38 @@ def _kmeans2(F: np.ndarray, rng: np.random.Generator, n_init: int = 5, iters: in
     return best
 
 
+def _cross_camera_pairs(a: CamBoxes, b: CamBoxes, min_conf: float = 0.5, max_d: float = 2.5, min_sim: float = 0.7,
+                        step: int = 5) -> np.ndarray:
+    """(i, j) box pairs that are the same person in cameras a and b: mutual nearest on the pitch (raw positions, the
+    cameras are not aligned yet), within `max_d`, and alike by ReID. Every `step`-th frame is enough to vote."""
+    from scipy.optimize import linear_sum_assignment
+    if a.reid is None or b.reid is None:
+        return np.zeros((0, 2), int)
+    out = []
+    for k in sorted(set(a.by_k) & set(b.by_k))[::step]:
+        ia, ib = a.boxes_at(k, min_conf), b.boxes_at(k, min_conf)
+        if not len(ia) or not len(ib):
+            continue
+        D = np.linalg.norm(a.xy_raw[ia][:, None] - b.xy_raw[ib][None], axis=2)
+        S = a.reid[ia] @ b.reid[ib].T
+        r, c = linear_sum_assignment(D - 0.5 * S)
+        for i, j in zip(r, c):
+            if D[i, j] < max_d and S[i, j] > min_sim and D[i].argmin() == j and D[:, j].argmin() == i:
+                out.append((ia[i], ib[j]))
+    return np.array(out, int).reshape(-1, 2)
+
+
 def assign_teams(cams: dict[str, CamBoxes], min_h: float = 40, min_conf: float = 0.4, label_min_h: float = 30,
-                 margin: float = 0.95, max_fit: int = 20000, seed: int = 0) -> dict:
-    """Split the boxes of all cameras into two teams by upper-body colour and write cam.team ('A' / 'B' / '').
+                 margin: float = 0.95, max_fit: int = 20000, seed: int = 0, per_camera: bool = True,
+                 min_pairs: int = 50) -> dict:
+    """Split the boxes into two teams by upper-body colour and write cam.team ('A' / 'B' / '').
+
+    per_camera (default): each phone gets its own two colour clusters, because phones render colours differently
+    (a yellow bib looked lime in one phone of the 10/8 test and fell into the no-bib cluster of a joint fit, which
+    then split one player into two identities). Which cluster of camera 2 is which of camera 1 is decided by the
+    players both cameras see at the same moment (mutual nearest on the pitch and alike by ReID): the same person is
+    on the same team whatever the colours look like. Without ReID or with fewer than `min_pairs` such pairs the
+    joint fit below is used.
 
     Bibs or shirts are the one thing every player of a team shares, so two clusters of the upper-body histogram
     (shares per hue / black / grey / white bin) are the two teams. The clusters are fitted on confident, big,
@@ -233,8 +262,8 @@ def assign_teams(cams: dict[str, CamBoxes], min_h: float = 40, min_conf: float =
     99 % of the boxes both label, and labels 98 % of the boxes that rule labels."""
     for c in cams.values():
         c.team = np.full(len(c), "", dtype="<U1")
+    rng = np.random.default_rng(seed)
     feats = {}
-    fit = []
     for name, c in cams.items():
         if c.color is None or not len(c):
             continue
@@ -242,27 +271,58 @@ def assign_teams(cams: dict[str, CamBoxes], min_h: float = 40, min_conf: float =
         s = up.sum(1)
         valid = s > 0
         F = up / np.maximum(s, 1e-9)[:, None]
-        feats[name] = (F, valid)
-        fit.append(F[valid & (c.h >= min_h) & (c.conf >= min_conf) & c.in_court])
-    F_fit = np.vstack(fit) if fit else np.zeros((0, UPPER))
-    if len(F_fit) < 20:
-        return {"n_fit": int(len(F_fit))}
-    rng = np.random.default_rng(seed)
-    if len(F_fit) > max_fit:
-        F_fit = F_fit[rng.choice(len(F_fit), max_fit, replace=False)]
-    C = _kmeans2(F_fit, rng)
-    a_fit = ((F_fit[:, None] - C[None]) ** 2).sum(2).argmin(1)
-    if (a_fit == 1).sum() > (a_fit == 0).sum():
-        C = C[::-1]
-    counts = {}
-    for name, (F, valid) in feats.items():
-        c = cams[name]
+        feats[name] = (F, valid, valid & (c.h >= min_h) & (c.conf >= min_conf) & c.in_court)
+
+    def fit(F_fit: np.ndarray) -> np.ndarray:
+        if len(F_fit) > max_fit:
+            F_fit = F_fit[rng.choice(len(F_fit), max_fit, replace=False)]
+        return _kmeans2(F_fit, rng)
+
+    def label(name: str, C: np.ndarray) -> np.ndarray:
+        """Cluster index per box, -1 where the colour is unclear or the box too small."""
+        F, valid, _ = feats[name]
         D = np.sqrt(((F[:, None] - C[None]) ** 2).sum(2))
-        near = D.argmin(1)
-        clear = D.min(1) < margin * D.max(1)
-        ok = valid & clear & (c.h >= label_min_h)
-        c.team = np.where(ok, np.where(near == 0, "A", "B"), "").astype("<U1")
-        counts[name] = {lab: int((c.team == lab).sum()) for lab in ("A", "B", "")}
-    return {"n_fit": int(len(F_fit)), "centres": {"A": C[0].round(4).tolist(), "B": C[1].round(4).tolist()},
-            "counts": counts}
+        ok = valid & (D.min(1) < margin * D.max(1)) & (cams[name].h >= label_min_h)
+        return np.where(ok, D.argmin(1), -1)
+
+    labels: dict[str, np.ndarray] = {}
+    centres: dict[str, np.ndarray] = {}
+    info: dict = {"mode": "joint"}
+    names = list(feats)
+    if per_camera and len(names) == 2 and all(feats[n][2].sum() >= 20 for n in names):
+        for n in names:
+            centres[n] = fit(feats[n][0][feats[n][2]])
+            labels[n] = label(n, centres[n])
+        P = _cross_camera_pairs(cams[names[0]], cams[names[1]])
+        la = labels[names[0]][P[:, 0]] if len(P) else np.zeros(0, int)
+        lb = labels[names[1]][P[:, 1]] if len(P) else np.zeros(0, int)
+        both = (la >= 0) & (lb >= 0)
+        if both.sum() >= min_pairs:
+            same = int((la[both] == lb[both]).sum())
+            diff = int(both.sum()) - same
+            if diff > same:                              # camera 2's clusters are numbered the other way round
+                labels[names[1]] = np.where(labels[names[1]] >= 0, 1 - labels[names[1]], -1)
+                centres[names[1]] = centres[names[1]][::-1]
+            info = {"mode": "per_camera", "pairs": int(both.sum()), "pair_agreement": round(max(same, diff) / both.sum(), 4)}
+    if info["mode"] == "joint":
+        F_fit = np.vstack([feats[n][0][feats[n][2]] for n in names]) if names else np.zeros((0, UPPER))
+        if len(F_fit) < 20:
+            return {"n_fit": int(len(F_fit))}
+        C = fit(F_fit)
+        for n in names:
+            centres[n] = C
+            labels[n] = label(n, C)
+    # A is the larger team (over the confident in-court boxes), so labels do not depend on cluster numbering
+    n0 = sum(int(((labels[n] == 0) & feats[n][2]).sum()) for n in names)
+    n1 = sum(int(((labels[n] == 1) & feats[n][2]).sum()) for n in names)
+    a_idx = 0 if n0 >= n1 else 1
+    counts = {}
+    for n in names:
+        lab = labels[n]
+        cams[n].team = np.where(lab < 0, "", np.where(lab == a_idx, "A", "B")).astype("<U1")
+        counts[n] = {t: int((cams[n].team == t).sum()) for t in ("A", "B", "")}
+    order = (lambda C: C) if a_idx == 0 else (lambda C: C[::-1])
+    return info | {"n_fit": int(sum(feats[n][2].sum() for n in names)), "counts": counts,
+                   "centres": {n: {"A": order(centres[n])[0].round(4).tolist(), "B": order(centres[n])[1].round(4).tolist()}
+                               for n in names}}
 

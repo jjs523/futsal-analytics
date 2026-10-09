@@ -308,8 +308,10 @@ def test_assign_identities_reproduces_research_final_d():
     align_cameras(cams, COURT, k_range=(0, data.n))
     for name, cam in cams.items():
         cam.team = np.array([{"Y": "A", "N": "B"}.get(x, "") for x in data.cams[name].team], dtype="<U1")
-    T = build_tracklets(cams, rate=float(meta["rate"]), frames=range(data.n))
-    out = lc.assign_identities(T, cams, float(meta["rate"]), border_exempt={"cam2": ("top",)})
+    # the research code had neither the appearance override of the pairing team gate nor the camera-conflict vote
+    T = build_tracklets(cams, rate=float(meta["rate"]), frames=range(data.n), team_override_sim=None)
+    out = lc.assign_identities(T, cams, float(meta["rate"]), lc.ClosedParams(team_camera_conflict=False),
+                               border_exempt={"cam2": ("top",)})
     ref = load_tracks(os.path.join(ROOT, "experiments", "results", "final_d.json"))
     key = lambda t: frozenset((k, cb) for k, p in t.items() for cb in p.boxes)
     assert [key(t) for t in out] == [key(t) for t in ref]

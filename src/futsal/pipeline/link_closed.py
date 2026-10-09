@@ -1,4 +1,4 @@
-"""Closed-set identity assignment: tracklets -> one identity per player, using the known number of players.
+﻿"""Closed-set identity assignment: tracklets -> one identity per player, using the known number of players.
 
 Futsal is 5 v 5, so instead of growing identities until a linker runs out of evidence, every tracklet either gets
 one of K identity slots per team (5 regular + 1 'spare' for substitutes and noise) or is left out. The solve is one
@@ -90,6 +90,8 @@ class ClosedParams:
     refuse: bool = True               # re-fuse multi-box points with the anisotropic covariances
     smooth: bool = True               # Savitzky-Golay (7, 2) after filling
     time_limit: float = 60.0          # per MILP solve, s
+    team_camera_conflict: bool = True  # tracklet team 'U' when the two cameras read the shirt colour oppositely
+                                       # (identity.team_vote); False = the research behaviour
 
 
 @dataclass
@@ -240,7 +242,7 @@ def merge_duplicates(T: list[Track], cams: dict[str, CamBoxes], P: ClosedParams 
     """Merge duplicate pairs whose boxes never come from the same camera in one frame (the cross-view pairing
     missed them): shared frames become fused two-camera points. Largest overlaps first; a merge that would put two
     boxes of one camera into a frame is skipped. Returns (tracklets, merges)."""
-    teams = [team_vote(t, cams)[0] for t in T]
+    teams = [team_vote(t, cams, camera_conflict=P.team_camera_conflict)[0] for t in T]
     parent = list(range(len(T)))
     groups: dict[int, Track] = {i: dict(t) for i, t in enumerate(T)}
 
@@ -660,7 +662,7 @@ def assign_identities(tracklets: list[Track], cams: dict[str, CamBoxes], rate: f
     tls = []
     for tr in T:
         ks = np.array(sorted(tr), int)
-        tls.append(_Tl(tr, ks, team_vote(tr, cams)[0], None))
+        tls.append(_Tl(tr, ks, team_vote(tr, cams, camera_conflict=params.team_camera_conflict)[0], None))
     long_ = [tl for tl in tls if len(tl) >= P.min_len_s * rate]
     short = [tl for tl in tls if len(tl) < P.min_len_s * rate]
     for tl in long_:

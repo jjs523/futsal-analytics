@@ -88,8 +88,9 @@ def test_pair_views_fuses_the_two_cameras_views_of_each_player():
 
 def test_pair_views_respects_teams_and_min_shared():
     cams = {"cam1": two_players("cam1"), "cam2": two_players("cam2")}
-    cams["cam2"].team = np.where(cams["cam2"].team == "A", "B", "A")       # contradicting teams: never fused
-    assert len(tracklets.build_tracklets(cams, rate=RATE)) == 4
+    cams["cam2"].team = np.where(cams["cam2"].team == "A", "B", "A")       # contradicting teams ...
+    assert len(tracklets.build_tracklets(cams, rate=RATE, team_override_sim=None)) == 4   # ... never fused by colour
+    assert len(tracklets.build_tracklets(cams, rate=RATE)) == 2     # ... unless the two views also look alike (ReID)
     cams = {"cam1": two_players("cam1"), "cam2": two_players("cam2")}
     assert len(tracklets.build_tracklets(cams, rate=RATE, min_shared=40)) == 4    # routed to pair_views
     with pytest.raises(TypeError):

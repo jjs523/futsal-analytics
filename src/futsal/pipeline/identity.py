@@ -72,16 +72,31 @@ def _labelled(track: Track, cams: dict[str, CamBoxes], min_h: float, min_conf: f
     return out
 
 
-def team_vote(track: Track, cams: dict[str, CamBoxes], min_h: float = 40, min_conf: float = 0.4) -> tuple[str, float]:
+def team_vote(track: Track, cams: dict[str, CamBoxes], min_h: float = 40, min_conf: float = 0.4,
+              camera_conflict: bool = True, min_cam_labels: int = 10) -> tuple[str, float]:
     """'A' / 'B' / 'U' and the box-height-weighted share of 'A' among the track's clearly labelled boxes.
     Big boxes count more because the shirt colour of a 40 px far-side player is unreliable. NaN share when nothing
-    is labelled (the vote is then 'U')."""
+    is labelled (the vote is then 'U').
+
+    camera_conflict: when each of two cameras has >= `min_cam_labels` labelled boxes and they clearly disagree (one
+    camera >= 0.7 'A', the other <= 0.3), the vote is 'U' whatever the weighted share says — the cameras render the
+    shirt differently, and a confident wrong team would forbid the right identity (see tracklets.pair_views)."""
     lab = _labelled(track, cams, min_h, min_conf)
     if not lab:
         return "U", float("nan")
     w = np.array([x[1] for x in lab])
     a = np.array([x[2] for x in lab], float)
     share = float((w * a).sum() / w.sum())
+    if camera_conflict:
+        per_cam: dict[str, list[bool]] = {}
+        for p in track.values():
+            for cam, i in p.boxes:
+                c = cams[cam]
+                if c.h[i] >= min_h and c.conf[i] >= min_conf and c.team[i]:
+                    per_cam.setdefault(cam, []).append(c.team[i] == "A")
+        shares = [float(np.mean(v)) for v in per_cam.values() if len(v) >= min_cam_labels]
+        if len(shares) >= 2 and max(shares) >= 0.7 and min(shares) <= 0.3:
+            return "U", share
     return ("A" if share >= 0.7 else "B" if share <= 0.3 else "U"), share
 
 
