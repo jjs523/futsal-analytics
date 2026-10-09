@@ -1,10 +1,10 @@
-data/
+﻿data/
 __pycache__/
 *.pyc
 .pytest_cache/
 *.egg-info/
 
-# 촬영 영상·점검 결과는 저장소에 올리지 않음 (원본은 드라이브 등으로 공유)
+# 珥ъ쁺 ?곸긽쨌?먭? 寃곌낵????μ냼???щ━吏 ?딆쓬 (?먮낯? ?쒕씪?대툕 ?깆쑝濡?怨듭쑀)
 *.mp4
 *.MP4
 *.mov
@@ -19,9 +19,10 @@ sync_check/
 calib/
 trackview*/
 *.pt
-experiments/cache/
+experiments/cache*/
 experiments/results/
 experiments/audit/
 experiments/videos/
 experiments/_*/
+
 

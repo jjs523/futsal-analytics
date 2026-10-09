@@ -1,4 +1,4 @@
-"""Aggregate a blinded visual-audit workflow result per variant: python experiments/unblind_audit.py <workflow output file>
+﻿"""Aggregate a blinded visual-audit workflow result per variant: python experiments/unblind_audit.py <workflow output file>
 
 Track sheets -> length-weighted identity purity (1 - foreign / judged crops) and the share of sheets with >1 identity;
 event sheets -> swap rate among decided crossings (SWAP / (OK + SWAP)). Writes experiments/audit/_blind/summary.json.
@@ -15,7 +15,7 @@ if __name__ == "__main__":
     d, _ = json.JSONDecoder().raw_decode(s[s.find("{"):])
     r = d.get("result", d)
     r = r if isinstance(r, dict) else json.loads(r)
-    key = json.load(open(os.path.join(ROOT, "experiments", "audit", "_blind", "key.json")))
+    key = json.load(open(os.path.join(ROOT, "experiments", "audit", os.environ.get("BLIND_DIR", "_blind"), "key.json")))
     agg = {}
     for x in r["details"]:
         it = key[x["variant"]]
@@ -40,5 +40,6 @@ if __name__ == "__main__":
                      "swap_rate": round(v["swap"] / max(v["ok"] + v["swap"], 1), 3),
                      "crossings": f"OK {v['ok']}, SWAP {v['swap']}, UNSURE {v['unsure']}",
                      "swap_sheets": v["swap_sheets"]}
-    json.dump(out, open(os.path.join(ROOT, "experiments", "audit", "_blind", "summary.json"), "w"), indent=1)
+    json.dump(out, open(os.path.join(ROOT, "experiments", "audit", os.environ.get("BLIND_DIR", "_blind"), "summary.json"), "w"), indent=1)
     print(json.dumps(out, indent=1, ensure_ascii=False))
+

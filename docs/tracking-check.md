@@ -50,6 +50,11 @@ python -m futsal.trackview --video C:\Users\user\dev\futsal-videos\20261008_1709
 | `--auto-moves` | 카메라가 움직인 순간을 자동으로 찾아 보정 (영상 전체를 훑어서 몇 분 더 걸림). 구간 안에 카메라가 움직였으면 사용 |
 | `--rate 10` | 초당 검출 횟수. 느리면 5 |
 | `--model yolo11n.pt` | 더 빠르지만 먼 선수를 더 놓치는 모델 |
+| `--ids v2` | 추적 방식 (기본 `v2`: 카메라별 조각 → 두 카메라 짝짓기 → 5대5 정원 배정). `appearance`는 예전 방식 |
+| `--no-reid` | 사람 재식별(ReID) 계산을 건너뛰고 예전 방식으로 추적. ReID가 설치되지 않았으면 자동으로 이렇게 됩니다 |
+| `--conf 0.1` | 검출 신뢰도 하한. 기본은 `v2`면 0.1, 예전 방식이면 0.3 |
+
+**ReID 설치 (v2에 필요):** `pip install -e ".[reid]"` 다음에 `pip install --no-deps boxmot`. GPU용 torch 설치 순서는 `src/futsal/pipeline/reid.py` 맨 위 설명을 보세요.
 
 **처리 시간:** 검출이 대부분입니다. 3분 × 초당 10번 × 2대면 3,600장입니다. GPU가 없으면 수십 분 이상 걸릴 수 있으니 **먼저 `--duration 30`으로 시험**해 보세요. 검출 결과는 `det_cam1.json`에 저장되고, 같은 설정으로 다시 돌리면 검출을 건너뛰고 영상만 다시 만듭니다.
 
@@ -60,7 +65,7 @@ python -m futsal.trackview --video C:\Users\user\dev\futsal-videos\20261008_1709
 | `trackview.mp4` | 확인용 영상 (1920×1080, 초당 10장) |
 | `events.csv` | ID가 경기장 한가운데서 생기거나 끊긴 순간 (엑셀로 열림) |
 | `tracks.json` | 선수별 위치. 2D 지도 뷰어(`web/viewer`)로 재생 |
-| `det_cam1.json`, `det_cam2.json` | 검출 결과 (다시 돌릴 때 재사용) |
+| `det_cam1.json`, `det_cam2.json` | 검출 결과 (다시 돌릴 때 재사용). ReID 특징은 옆의 `det_cam1.json.reid.npy` |
 
 ## 3. 볼 것
 

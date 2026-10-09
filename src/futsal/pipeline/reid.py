@@ -3,6 +3,17 @@
 Colour histograms tell the two teams apart but hardly the players within a team (same bibs). A ReID network
 trained on many people's crops gives a 512-d embedding where the same person in two frames, or in the two
 cameras, is close; the box-level tracker uses it to link tracklets and to pair the cameras (pipeline.align).
+
+Install (Python 3.14; boxmot 12's own pins - numpy==1.26.4, opencv-python<5, torchvision<0.18 - do not install
+there and would replace this project's numpy / OpenCV, so boxmot goes in without its dependencies):
+
+    pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128    # GPU build (or plain pip: CPU)
+    pip install -e ".[reid]"            # the light deps boxmot's ReID path imports: filterpy ftfy gdown lap loguru
+                                        # pandas pyyaml regex scikit-learn (+ torch / torchvision if not yet there)
+    pip install --no-deps boxmot        # tested with 12.0.2
+
+boxmot asks for lapx; the `lap` package provides the same module and installs on 3.14. Weights: FUTSAL_REID_WEIGHTS,
+else C:/Users/user/dev/models/osnet_ain_x1_0_msmt17.pt, else boxmot downloads them on first use.
 """
 from __future__ import annotations
 
@@ -36,7 +47,8 @@ def reid_embedder(weights: str | None = None, device: str | None = None,
         from boxmot.utils import WEIGHTS
     except ImportError as e:
         raise ImportError("ReID 임베딩에는 torch와 boxmot이 필요합니다: "
-                          "pip install torch boxmot (boxmot 의존성이 충돌하면 pip install --no-deps boxmot)") from e
+                          'pip install -e ".[reid]" 후 pip install --no-deps boxmot '
+                          "(자세한 설치 순서는 futsal/pipeline/reid.py 맨 위 설명)") from e
     w = Path(weights or default_weights())
     if w.parent == Path(".") and not w.exists():
         w = WEIGHTS / w.name                      # boxmot downloads known models into its own weights folder

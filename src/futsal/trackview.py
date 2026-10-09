@@ -7,10 +7,17 @@
   trackview.mp4  위: 두 카메라 화면에 선수 ID, 아래: 2D 지도 + ID 사건 목록
   events.csv     ID가 경기장 한가운데서 새로 생기거나 끊긴 순간 (= ID가 바뀌었을 가능성이 큰 곳) 목록
   tracks.json    선수별 위치 (web/viewer 로 재생 가능)
-  det_cam1.json  검출 결과 캐시 (같은 설정으로 다시 돌리면 검출을 건너뜀)
+  det_cam1.json  검출 결과 캐시 (같은 설정으로 다시 돌리면 검출을 건너뜀; ReID 특징은 det_cam1.json.reid.npy)
 
 --start 는 cam1 영상 기준 초, --offset 은 cam1 시각 = 그 카메라 시각 + offset (python -m futsal.sync 결과).
 검출은 YOLO(사전학습 person)를 씁니다: pip install -e ".[vision]". GPU가 없으면 3분 구간에 수십 분 걸릴 수 있습니다.
+
+추적 방식 (--ids):
+  v2          (기본) 상자 단위 추적: 카메라별 조각 → 두 카메라 짝짓기 → 5대5 정원 배정. 사람 재식별(ReID)
+              특징이 필요합니다 (설치: futsal/pipeline/reid.py 설명). 검출 신뢰도 기본 0.1.
+  appearance  예전 방식 (발 위치 + 색 특징). ReID를 쓸 수 없으면 v2 대신 자동으로 이 방식을 씁니다.
+  motion      움직임만 보는 가장 오래된 방식.
+--no-reid 는 ReID 계산을 건너뛰고 예전 방식(appearance)으로 추적합니다.
 """
 from __future__ import annotations
 
@@ -26,7 +33,7 @@ import numpy as np
 from .court import Court
 from .homography import Calibration, CalibrationTimeline, calibration_at, timeline_from_json
 from .pipeline import detect
-from .pipeline.run import build_tracks
+from .pipeline.run import IDS, build_tracks
 from .tracks import TrackSet
 
 PANEL_W, PANEL_H = 960, 540
@@ -130,6 +137,21 @@ def _fmt(t: float) -> str:
     return f"{int(t // 60)}:{t % 60:04.1f}"
 
 
+def _rect(d) -> tuple[float, float, float, float]:
+    """A detection's box in calibrated pixels: the stored box, or one rebuilt from the foot point and height for
+    caches written before boxes were kept."""
+    if d.box is not None:
+        return d.box
+    return d.u - 0.22 * d.h_px, d.v - d.h_px, d.u + 0.22 * d.h_px, d.v
+
+
+def frame_size(path: str) -> tuple[int, int]:
+    cap = cv2.VideoCapture(path)
+    wh = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    cap.release()
+    return wh
+
+
 def render(out_path: str, videos: dict[str, str], cals: dict, offsets: dict, ts: TrackSet, dets: dict[str, list],
            court: Court, start: float, events: list[dict], fps_out: float | None = None, tail_s: float = 2.0) -> int:
     """One output frame per tracking step: camera panels on top, 2D map + event list below. Returns frames written."""
@@ -181,8 +203,7 @@ def render(out_path: str, videos: dict[str, str], cals: dict, offsets: dict, ts:
                             if dist[q] < max(25.0, 0.4 * boxes[q].h_px) and q not in taken:
                                 b, _ = boxes[q], taken.add(q)
                         if b is not None:
-                            x0, y0 = int((b.u - 0.22 * b.h_px) * sc), int((b.v - b.h_px) * sc)
-                            x1, y1 = int((b.u + 0.22 * b.h_px) * sc), int(b.v * sc)
+                            x0, y0, x1, y1 = (int(c * sc) for c in _rect(b))
                             cv2.rectangle(panel, (x0, y0), (x1, y1), col, 2)
                             tx, ty = x0, y0 - 4
                         else:                       # tracked here from the other camera / smoothing, no box
@@ -192,8 +213,8 @@ def render(out_path: str, videos: dict[str, str], cals: dict, offsets: dict, ts:
                         cv2.putText(panel, str(pid), (tx, ty), cv2.FONT_HERSHEY_SIMPLEX, 0.6, col, 2, cv2.LINE_AA)
                 for q, b in enumerate(boxes):           # detections no track claimed: thin grey
                     if q not in taken:
-                        cv2.rectangle(panel, (int((b.u - 0.22 * b.h_px) * sc), int((b.v - b.h_px) * sc)),
-                                      (int((b.u + 0.22 * b.h_px) * sc), int(b.v * sc)), (160, 160, 160), 1)
+                        x0, y0, x1, y1 = (int(c * sc) for c in _rect(b))
+                        cv2.rectangle(panel, (x0, y0), (x1, y1), (160, 160, 160), 1)
             label = f"{cam}  {_fmt(t_cam)}"
             cv2.putText(panel, label, (10, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 4, cv2.LINE_AA)
             cv2.putText(panel, label, (10, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
@@ -237,14 +258,18 @@ def render(out_path: str, videos: dict[str, str], cals: dict, offsets: dict, ts:
 
 def run(videos: dict[str, str], cals: dict, offsets: dict[str, tuple[float, float]], start: float, duration: float,
         out_dir: str, detector_factory, court: Court, rate_hz: float = 10.0, fps_out: float = 10.0,
-        det_tag: str = "") -> dict:
+        det_tag: str = "", embedder=None, ids: str = "v2") -> dict:
+    """Detect (cached per camera), track with build_tracks(ids=...), write tracks.json / events.csv / trackview.mp4.
+    `embedder` (pipeline.reid.reid_embedder) adds a ReID embedding to every box, which ids="v2" needs; without it
+    v2 falls back to "appearance". The detection cache key is `det_tag` plus whether ReID was computed."""
     os.makedirs(out_dir, exist_ok=True)
+    tag = det_tag + ("+reid" if embedder is not None else "")
     dets = {}
     for cam, path in videos.items():
         off, drift = offsets.get(cam, (0.0, 0.0))
         s_cam = (start - off) / (1 + drift)
         cache = os.path.join(out_dir, f"det_{cam}.json")
-        want = {"video": os.path.basename(path), "start": round(s_cam, 3), "duration": duration, "rate": rate_hz, "tag": det_tag}
+        want = {"video": os.path.basename(path), "start": round(s_cam, 3), "duration": duration, "rate": rate_hz, "tag": tag}
         if os.path.exists(cache):
             d, meta = detect.load(cache)
             if all(meta.get(k) == v for k, v in want.items()):
@@ -253,12 +278,20 @@ def run(videos: dict[str, str], cals: dict, offsets: dict[str, tuple[float, floa
                 continue
         print(f"  {cam}: 선수 검출 중 ({_fmt(s_cam)}부터 {duration:.0f}초)...")
         d, fps, _ = detect.detect_video(path, detector_factory(cam), rate_hz=rate_hz, start_s=max(s_cam, 0.0),
-                                        end_s=s_cam + duration, progress=True)
+                                        end_s=s_cam + duration, progress=True, embedder=embedder)
         detect.save(d, cache, **want)
         dets[cam] = d
     # reference clock for tracking: 0 = window start on cam1's clock
     sync = {cam: {"offset": offsets.get(cam, (0.0, 0.0))[0] - start, "drift": offsets.get(cam, (0.0, 0.0))[1]} for cam in videos}
-    ts = build_tracks(court, dets, cals, sync, fps_out=rate_hz)
+    info: dict = {}
+    extra = {"frame_wh": {cam: frame_size(p) for cam, p in videos.items()}} if ids == "v2" else {}
+    ts = build_tracks(court, dets, cals, sync, fps_out=rate_hz, ids=ids, info=info, **extra)
+    if info.get("fallback"):
+        print("  ReID 특징이 없어 예전 방식(appearance)으로 추적합니다")
+    if info.get("ids") == "v2":
+        al = info.get("alignment")
+        print(f"  추적 v2: 조각 {info['tracklets']}개 → 선수 {info['identities']}명"
+              + (f", 두 카메라 위치 차 {al['median_before_m']} → {al['median_after_m']} m" if al else ""))
     n = int(round(duration * rate_hz))
     for p in ts.players:                                   # clip to the window
         xy = np.full((n, 2), np.nan)
@@ -279,7 +312,7 @@ def run(videos: dict[str, str], cals: dict, offsets: dict[str, tuple[float, floa
     frames = render(os.path.join(out_dir, "trackview.mp4"), videos, cals, offsets, ts, dets, court, start, events, fps_out)
     long_ids = [p for p in ts.players if np.mean(np.isfinite(p.xy[:, 0])) > 0.5]
     return {"ids": len(ts.players), "ids_over_half": len(long_ids), "events": len(events), "frames": frames,
-            "detections": {c: len(d) for c, d in dets.items()}}
+            "detections": {c: len(d) for c, d in dets.items()}, "tracker": info.get("ids", ids)}
 
 
 def main(argv=None):
@@ -292,7 +325,10 @@ def main(argv=None):
     ap.add_argument("--duration", type=float, default=180.0)
     ap.add_argument("--court", default="40x20")
     ap.add_argument("--model", default="yolo11s.pt"); ap.add_argument("--imgsz", type=int, default=1280)
-    ap.add_argument("--conf", type=float, default=0.3); ap.add_argument("--rate", type=float, default=10.0, help="초당 검출 횟수")
+    ap.add_argument("--conf", type=float, default=None, help="검출 신뢰도 하한 (기본: --ids v2 는 0.1, 그 외 0.3)")
+    ap.add_argument("--rate", type=float, default=10.0, help="초당 검출 횟수")
+    ap.add_argument("--ids", choices=IDS, default="v2", help="추적 방식: v2 (기본, ReID 필요) / appearance (예전 방식) / motion")
+    ap.add_argument("--no-reid", action="store_true", help="ReID 계산을 건너뛰고 예전 방식(appearance)으로 추적")
     ap.add_argument("--auto-moves", action="store_true", help="카메라가 움직인 순간을 자동으로 찾아 보정 (futsal.camshift)")
     ap.add_argument("--out", default="trackview")
     a = ap.parse_args(argv)
@@ -306,10 +342,20 @@ def main(argv=None):
     videos = dict(zip(names, a.video))
     cals = {n: load_calibration(c, v, a.auto_moves, a.out) for n, c, v in zip(names, a.calib, a.video)}
     offsets = {n: (o, d) for n, o, d in zip(names, offs, drifts)}
+    ids = "appearance" if a.no_reid and a.ids == "v2" else a.ids
+    embedder = None
+    if ids == "v2":
+        from .pipeline.reid import reid_embedder
+        try:
+            embedder = reid_embedder()
+        except ImportError as e:
+            print(f"ReID를 쓸 수 없어 예전 방식(appearance)으로 추적합니다: {e}")
+            ids = "appearance"
+    conf = a.conf if a.conf is not None else (0.1 if ids == "v2" else 0.3)
     res = run(videos, cals, offsets, a.start, a.duration, a.out,
-              lambda cam: detect.yolo_detector(a.model, conf=a.conf, imgsz=a.imgsz), court, a.rate,
-              det_tag=f"{a.model}@{a.imgsz}/{a.conf}")
-    print(f"\nID {res['ids']}개 (구간 절반 이상 보인 ID {res['ids_over_half']}개), "
+              lambda cam: detect.yolo_detector(a.model, conf=conf, imgsz=a.imgsz), court, a.rate,
+              det_tag=f"{a.model}@{a.imgsz}/{conf}", embedder=embedder, ids=ids)
+    print(f"\n추적 방식 {res['tracker']}: ID {res['ids']}개 (구간 절반 이상 보인 ID {res['ids_over_half']}개), "
           f"경기장 한가운데서 생기거나 끊긴 ID {res['events']}건")
     print(f"→ {os.path.join(a.out, 'trackview.mp4')}, {os.path.join(a.out, 'events.csv')}, {os.path.join(a.out, 'tracks.json')}")
 

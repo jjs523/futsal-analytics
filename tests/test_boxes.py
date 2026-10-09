@@ -10,7 +10,7 @@ import pytest
 from futsal.court import Court
 from futsal.homography import Calibration
 from futsal.pipeline import detect
-from futsal.pipeline.align import align_cameras, apply_alignment
+from futsal.pipeline.align import VALID_MARGIN_M, align_cameras, apply_alignment
 from futsal.pipeline.boxes import (CamBoxes, assign_teams, build_cam_boxes, cam_boxes_from_cache, cams_from_cache,
                                    grid_frames)
 from futsal.pipeline.detect import Detection
@@ -210,7 +210,10 @@ def test_parity_with_the_research_harness():
     al = align_cameras(cams, COURT, k_range=(0, raw.n))
     assert al["pairs"] == aligned.alignment["pairs"]
     for name, cam in cams.items():
-        assert np.allclose(cam.xy, aligned.cams[name].xy, atol=1e-6, rtol=0)
+        # the research applies the cubic everywhere (one off-pitch box went to 3e8 m); src holds it at the zone edge
+        zone = COURT.contains(cam.xy_raw, VALID_MARGIN_M)
+        assert np.allclose(cam.xy[zone], aligned.cams[name].xy[zone], atol=1e-6, rtol=0)
+        assert np.abs(cam.xy - cam.xy_raw).max() < 5.0
         assert np.array_equal(cam.in_court, aligned.cams[name].in_court)
     one = cam_boxes_from_cache(os.path.join(CACHE, "cam2.npz"), "cam2", cams["cam2"].cal, meta["offsets"]["cam2"],
                                meta["start"], meta["rate"], COURT)

@@ -17,7 +17,7 @@ import pytest
 from futsal.court import Court
 from futsal.homography import Calibration
 from futsal.pipeline import identity, tracklets
-from futsal.pipeline.align import align_cameras
+from futsal.pipeline.align import VALID_MARGIN_M, align_cameras
 from futsal.pipeline.boxes import CamBoxes, TrackPoint, assign_teams, build_cam_boxes, cams_from_cache
 from futsal.pipeline.detect import FEAT_LEN, Detection
 
@@ -387,7 +387,8 @@ def test_build_tracklets_partition_matches_research_xview():
     assert al is not None and al["pairs"] == data.alignment["pairs"]
     for name, cam in cams.items():
         assert np.array_equal(cam.k, data.cams[name].k) and np.array_equal(cam.in_court, data.cams[name].in_court)
-        assert np.allclose(cam.xy, data.cams[name].xy, atol=1e-6, rtol=0)
+        zone = COURT.contains(cam.xy_raw, VALID_MARGIN_M)        # off-pitch boxes: see align.apply_alignment
+        assert np.allclose(cam.xy[zone], data.cams[name].xy[zone], atol=1e-6, rtol=0)
         cam.team = np.array([{"Y": "A", "N": "B"}.get(x, "") for x in data.cams[name].team], dtype="<U1")
     key = lambda tracks: {frozenset((k, cb) for k, p in t.items() for cb in p.boxes) for t in tracks}
     ref = xview.xview(data, "conservative")

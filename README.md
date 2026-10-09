@@ -26,7 +26,8 @@
 ## 빠른 시작 (PC)
 
 ```bash
-pip install -e ".[server,sim,dev]"        # 실제 영상 검출까지 하려면 ".[vision]" 추가
+pip install -e ".[server,sim,dev]"        # 실제 영상 검출까지 하려면 ".[vision]" 추가 (scipy는 기본 의존성)
+# 추적 v2 (ReID): ".[vision,reid]" 설치 후 pip install --no-deps boxmot  (docs/tracking-check.md)
 pytest                                     # 전체 테스트
 
 uvicorn server.app.main:app --reload       # 개발용 도구: http://localhost:8000 → "데모 경기 만들기"

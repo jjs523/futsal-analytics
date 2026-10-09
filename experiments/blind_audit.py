@@ -1,4 +1,4 @@
-"""Copy audit sheets of several variants to anonymous names so raters cannot tell which tracker made them.
+﻿"""Copy audit sheets of several variants to anonymous names so raters cannot tell which tracker made them.
 
 python experiments/blind_audit.py baseline final_a final_b final_d
 Writes experiments/audit/_blind/<code>.jpg and experiments/audit/_blind/key.json (code -> variant, kind, original path, seconds),
@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from harness import ROOT
 
 if __name__ == "__main__":
-    out = os.path.join(ROOT, "experiments", "audit", "_blind")
+    out = os.path.join(ROOT, "experiments", "audit", os.environ.get("BLIND_DIR", "_blind"))
     if os.path.isdir(out):
         shutil.rmtree(out)
     os.makedirs(out)
@@ -37,3 +37,4 @@ if __name__ == "__main__":
     json.dump(key, open(os.path.join(out, "key.json"), "w"), indent=1)
     json.dump({"sheets": sheets}, open(os.path.join(out, "sheets.json"), "w"), indent=1)
     print(f"{len(sheets)} sheets -> {out}")
+

@@ -14,6 +14,7 @@ from ..court import Court
 from .boxes import COURT_MARGIN_M, CamBoxes
 
 MIN_PAIRS = 200
+VALID_MARGIN_M = 3.0          # the correction field is trusted up to this far outside the lines (pairs are in-court)
 
 
 def _features(xy: np.ndarray, court: Court) -> np.ndarray:
@@ -71,12 +72,19 @@ def matched_pairs(a: CamBoxes, b: CamBoxes, court: Court, min_conf: float = 0.5,
 
 def apply_alignment(cams: dict[str, CamBoxes], coef: dict[str, list], court: Court = Court()) -> None:
     """Move each camera in `coef` by half its correction field (in place), starting from xy_raw, so applying
-    twice does not compound. in_court follows the moved positions."""
+    twice does not compound. in_court follows the moved positions.
+
+    The cubic is fitted on in-court pairs only and blows up outside them (an off-pitch box went to 3e8 m), so it is
+    evaluated exactly within the pitch + VALID_MARGIN_M and, further out, at the nearest point of that zone: the
+    shift stays bounded and continuous. Cutting it to zero there instead would jump by up to ~3 m at the zone edge
+    (the test match's far corner) and push real players there out of in_court."""
     for name, W in coef.items():
         cam = cams.get(name)
         if cam is None or not len(cam):
             continue
-        cam.xy = cam.xy_raw + 0.5 * (_features(cam.xy_raw, court) @ np.asarray(W, float))
+        m = VALID_MARGIN_M
+        at = np.stack([np.clip(cam.xy_raw[:, 0], -m, court.length + m), np.clip(cam.xy_raw[:, 1], -m, court.width + m)], 1)
+        cam.xy = cam.xy_raw + 0.5 * (_features(at, court) @ np.asarray(W, float))
         cam.in_court = court.contains(cam.xy, COURT_MARGIN_M)
 
 
