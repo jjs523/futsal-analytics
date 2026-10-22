@@ -28,7 +28,7 @@ def main():
     ap.add_argument("--start", type=float, default=540.0, help="cam1 clock")
     ap.add_argument("--duration", type=float, default=360.0)
     ap.add_argument("--rate", type=float, default=10.0)
-    ap.add_argument("--model", default="yolo11x.pt")
+    ap.add_argument("--model", default="yolo26x.pt")
     ap.add_argument("--imgsz", type=int, default=1280)
     ap.add_argument("--conf", type=float, default=0.1)
     ap.add_argument("--reid", default=r"C:\Users\user\dev\models\osnet_ain_x1_0_msmt17.pt")

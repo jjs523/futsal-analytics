@@ -40,7 +40,7 @@ python -m futsal.ball tiles --images labeling/cam2 --labels labeling/labels --ou
 python -m futsal.ball merge --src downloads/futsal-ball --ball-class 0 --out datasets/ball --prefix rf1
 
 # 5) 학습 (GPU 필요 → Colab 권장, 아래 참고)
-python -m futsal.ball train --data datasets/ball/data.yaml --model yolo11s.pt --epochs 100
+python -m futsal.ball train --data datasets/ball/data.yaml --model yolo26s.pt --epochs 100
 
 # 6) 영상에서 공 찾기 + 궤적 정리 → 프레임별 공 위치 JSON
 python -m futsal.ball detect cam1.mp4 --model runs/detect/ball/weights/best.pt --out cam1.ball.json
@@ -89,11 +89,11 @@ GPU가 없으면 Google Colab 무료 T4로 충분합니다.
 !git clone https://github.com/jjs523/futsal-analytics && cd futsal-analytics && pip install -e ".[vision]"
 from google.colab import drive; drive.mount('/content/drive')
 # datasets/ball 폴더를 Drive에 올려두고 경로 지정 (data.yaml 안의 path도 Colab 경로로 바꾸기)
-!cd futsal-analytics && python -m futsal.ball train --data /content/drive/MyDrive/ball/data.yaml --model yolo11s.pt --epochs 100
+!cd futsal-analytics && python -m futsal.ball train --data /content/drive/MyDrive/ball/data.yaml --model yolo26s.pt --epochs 100
 ```
 
 - 학습 설정(`train` 명령 안): 축소 증강은 약하게(`scale=0.3`, 공이 더 작아져 사라지지 않게), 좌우 뒤집기·밝기 변화는 유지, 회전 없음, 30 에폭 개선 없으면 조기 종료.
-- 모델 크기: **YOLO11s로 시작**해서 정확도를 확인하고, 폰 속도 문제가 있으면 YOLO11n과 비교합니다.
+- 모델 크기: **YOLO26s로 시작**해서 정확도를 확인하고, 폰 속도 문제가 있으면 YOLO26n과 비교합니다.
 - 결과 `runs/detect/ball/weights/best.pt`를 Drive에 저장해 팀이 공유합니다.
 
 ## 평가
@@ -102,7 +102,7 @@ from google.colab import drive; drive.mount('/content/drive')
 2. **거리별 확인**: 가까운 공·먼 공으로 나눠 놓친 비율을 봅니다. 먼 쪽이 약하면 그쪽 라벨을 더 모읍니다.
 3. **궤적 정리 후 결과**: 실제 영상 1~2분을 `detect`로 돌려 `missing` 비율, 엉뚱한 곳으로 튀는 횟수를 셉니다.
 
-비교 기준선은 **COCO 사전학습 모델 + 조각 검출**입니다 (같은 `detect` 명령에 `--model yolo11s.pt`). 파인튜닝 효과를 이 기준과 비교해 발표에 씁니다.
+비교 기준선은 **COCO 사전학습 모델 + 조각 검출**입니다 (같은 `detect` 명령에 `--model yolo26s.pt`). 파인튜닝 효과를 이 기준과 비교해 발표에 씁니다.
 
 ## 폰에서 돌릴 때 비용
 

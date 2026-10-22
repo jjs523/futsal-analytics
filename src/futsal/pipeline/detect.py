@@ -187,7 +187,7 @@ def load(path: str) -> tuple[list[Detection], dict]:
     return dets, d["meta"]
 
 
-def yolo_detector(model: str = "yolo11s.pt", conf: float = 0.3, imgsz: int = 1280, tiles: int = 1) -> Detector:
+def yolo_detector(model: str = "yolo26s.pt", conf: float = 0.3, imgsz: int = 1280, tiles: int = 1) -> Detector:
     """Pretrained COCO 'person' detector from Ultralytics (pip install '.[vision]').
     tiles=2 runs a 2x2 overlapping tiling for small far-side players (4x slower)."""
     from ultralytics import YOLO   # optional dependency

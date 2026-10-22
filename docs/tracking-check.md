@@ -11,7 +11,7 @@
 ## 준비
 
 ```powershell
-pip install -e ".[vision]"      # YOLO (처음 실행 때 yolo11s.pt 자동 다운로드)
+pip install -e ".[vision]"      # YOLO (처음 실행 때 yolo26s.pt 자동 다운로드)
 ```
 
 ## 1. 기준점 탭 (카메라마다 한 번)
@@ -49,7 +49,7 @@ python -m futsal.trackview --video C:\Users\user\dev\futsal-videos\20261008_1709
 | `--start 600 --duration 180` | cam1 영상 10:00부터 3분 |
 | `--auto-moves` | 카메라가 움직인 순간을 자동으로 찾아 보정 (영상 전체를 훑어서 몇 분 더 걸림). 구간 안에 카메라가 움직였으면 사용 |
 | `--rate 10` | 초당 검출 횟수. 느리면 5 |
-| `--model yolo11n.pt` | 더 빠르지만 먼 선수를 더 놓치는 모델 |
+| `--model yolo26n.pt` | 더 빠르지만 먼 선수를 더 놓치는 모델 |
 | `--ids v2` | 추적 방식 (기본 `v2`: 카메라별 조각 → 두 카메라 짝짓기 → 5대5 정원 배정). `appearance`는 예전 방식 |
 | `--no-reid` | 사람 재식별(ReID) 계산을 건너뛰고 예전 방식으로 추적. ReID가 설치되지 않았으면 자동으로 이렇게 됩니다 |
 | `--conf 0.1` | 검출 신뢰도 하한. 기본은 `v2`면 0.1, 예전 방식이면 0.3 |

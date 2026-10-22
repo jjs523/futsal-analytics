@@ -6,6 +6,6 @@
   python -m futsal.ball frames  cam1.mp4 --out labeling/cam1 --every 1.0     라벨링할 프레임 뽑기
   python -m futsal.ball tiles   --images ... --labels ... --out datasets/ball 조각 학습 데이터 만들기
   python -m futsal.ball merge   --src roboflow_export --map 0 --out datasets/ball  공개 데이터셋 합치기
-  python -m futsal.ball train   --data datasets/ball/data.yaml --model yolo11s.pt  학습 (GPU, ultralytics 필요)
+  python -m futsal.ball train   --data datasets/ball/data.yaml --model yolo26s.pt  학습 (GPU, ultralytics 필요)
   python -m futsal.ball detect  cam1.mp4 --model best.pt --out cam1.ball.json    영상에서 공 찾기 + 궤적 정리
 """

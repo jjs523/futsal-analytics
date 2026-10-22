@@ -27,7 +27,7 @@ def main(argv=None):
     m.add_argument("--prefix", default="ext")
 
     r = sub.add_parser("train", help="YOLO 학습 (GPU 권장, pip install '.[vision]')")
-    r.add_argument("--data", required=True); r.add_argument("--model", default="yolo11s.pt")
+    r.add_argument("--data", required=True); r.add_argument("--model", default="yolo26s.pt")
     r.add_argument("--epochs", type=int, default=100); r.add_argument("--batch", type=int, default=16)
     r.add_argument("--name", default="ball")
 
