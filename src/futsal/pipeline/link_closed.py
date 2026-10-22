@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
+from typing import Callable
 
 import numpy as np
 
@@ -796,9 +797,29 @@ def assign_identities_windowed(tracklets: list[Track], cams: dict[str, CamBoxes]
     the overlap boxes, and the differences sit mostly in the last 30 s (an edge of both solves). Witnessed swaps
     4 vs 3, events 0.50 vs 0.33 per minute: about equal, not better or worse by the label-free metrics."""
     st = stats if stats is not None else WindowedStats()
+
+    def solve(clip: list[Track]) -> list[Track]:
+        wst = ClosedStats()
+        st.per_window.append(wst)
+        return assign_identities(clip, cams, rate, params, border_exempt, wst, court)
+
+    ids, origin = chain_windows(tracklets, rate, solve, window_s, overlap_s, min_boxes, min_agree, st)
+    st.output_team = [st.per_window[w].output_team[j] for w, j in origin]
+    return ids
+
+
+def chain_windows(tracklets: list[Track], rate: float, solve: Callable[[list[Track]], list[Track]],
+                  window_s: float = 360.0, overlap_s: float = 60.0, min_boxes: int = 10, min_agree: float = 0.5,
+                  stats: WindowedStats | None = None) -> tuple[list[Track], list[tuple[int, int]]]:
+    """The window / chain / ownership scheme of assign_identities_windowed (its docstring, steps 1-3) for any
+    identity solver: `solve(tracklets clipped to one window)` -> identities that use each box at most once.
+    Returns (identities in order of first appearance, origin) with origin[q] = (window, index in that window's
+    solution) of the solved track that started identity q. Fills stats.windows / cuts / matched / new_ids / ended /
+    agreement (not per_window or output_team: those belong to the solver)."""
+    st = stats if stats is not None else WindowedStats()
     T = [t for t in tracklets if t]
     if not T:
-        return []
+        return [], []
     lo = min(min(t) for t in T)
     hi = max(max(t) for t in T)
     win = max(1, int(round(window_s * rate)))
@@ -810,15 +831,13 @@ def assign_identities_windowed(tracklets: list[Track], cams: dict[str, CamBoxes]
     sols: list[list[Track]] = []
     for a, b in wins:
         clip = [c for c in ({k: p for k, p in t.items() if a <= k <= b} for t in T if min(t) <= b and max(t) >= a) if c]
-        wst = ClosedStats()
-        sols.append(assign_identities(clip, cams, rate, params, border_exempt, wst, court))
-        st.per_window.append(wst)
+        sols.append(solve(clip))
     # cut frames: window w owns [cut_{w-1}, cut_w)
     cuts = [(wins[w + 1][0] + wins[w][1] + 1) // 2 for w in range(len(wins) - 1)]
     st.cuts = cuts
     bounds = [lo] + cuts + [hi + 1]
     ids: list[Track] = []
-    team: list[str] = []
+    origin: list[tuple[int, int]] = []
     cur_id: list[int] = []                                          # output identity of each track of the last window
     for w, sol in enumerate(sols):
         a, b = bounds[w], bounds[w + 1]
@@ -835,9 +854,9 @@ def assign_identities_windowed(tracklets: list[Track], cams: dict[str, CamBoxes]
             q = cur_id[match[j]] if j in match else len(ids)
             if q == len(ids):
                 ids.append({})
-                team.append(st.per_window[w].output_team[j])
+                origin.append((w, j))
             ids[q].update({k: p for k, p in tr.items() if a <= k < b})
             nxt.append(q)
         cur_id = nxt
-    st.output_team = [tm for t, tm in zip(ids, team) if t]
-    return [dict(sorted(t.items())) for t in ids if t]
+    keep = [q for q, t in enumerate(ids) if t]
+    return [dict(sorted(ids[q].items())) for q in keep], [origin[q] for q in keep]

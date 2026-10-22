@@ -8,6 +8,7 @@ the same harness as the research candidates, so src and research stay comparable
                align_cameras -> build_tracklets -> assign_identities_windowed (360 s windows, top edge exempt on
                both cameras) -> refine_positions (RTS). Its positions are the analytics output: the RTS smoother
                removes what the speed metrics measure, so judge link quality on src_v2_link.
+  src_v2gta    run.track_cams(linker="gta") as build_tracks(ids="v2gta") calls it: relink source + open-set linker.
   src_v2_link  the same identities with the linker's own positions (ClosedParams() re-fusion + Savitzky-Golay,
                no RTS), comparable with final_d on the physics metrics.
   src_v2_yn    src_v2_link with the research inputs: yellow-bib teams, the clean-crop exemption on cam2 only, and
@@ -60,8 +61,21 @@ def src_v2(data: Data) -> list[Track]:
     t0 = time.time()
     cams, rate = _cams(data.court)
     info: dict = {}
-    ids, _ = run.track_cams(cams, data.court, rate, info=info)
+    ids, _ = run.track_cams(cams, data.court, rate, info=info, linker="closed")
     _report("src_v2", info, t0)
+    return to_harness(ids)
+
+
+@register("src_v2gta")
+def src_v2gta(data: Data) -> list[Track]:
+    """build_tracks(ids="v2gta"): the open-set linker on the relink source."""
+    t0 = time.time()
+    cams, rate = _cams(data.court)
+    info: dict = {}
+    ids, _ = run.track_cams(cams, data.court, rate, info=info, linker="gta")
+    al = info["alignment"] or {}
+    print(f"src_v2gta: alignment {al.get('pairs')} pairs {al.get('median_before_m')} -> {al.get('median_after_m')} m, "
+          f"identities {info['identities']}, {time.time() - t0:.1f} s", file=sys.stderr)
     return to_harness(ids)
 
 

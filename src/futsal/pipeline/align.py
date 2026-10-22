@@ -111,3 +111,114 @@ def align_cameras(cams: dict[str, CamBoxes], court: Court, min_conf: float = 0.5
     Qm = Q + 0.5 * (_features(Q, court) @ Wab)
     after = float(np.median(np.linalg.norm(Pm - Qm, axis=1)))
     return {"pairs": len(P), "median_before_m": round(before, 3), "median_after_m": round(after, 3), "coef": coef}
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# Clock refinement from the players
+# ---------------------------------------------------------------------------------------------------------------
+
+def _shift_residual(a: CamBoxes, b: CamBoxes, ks: list[int], d: int, min_conf: float, max_d: float,
+                    min_sim: float) -> tuple[float, int]:
+    """Mean distance between the same players (mutual nearest + ReID-alike) when camera b is read d grid frames
+    later than camera a."""
+    ds = []
+    for k in ks:
+        ia, ib = a.boxes_at(k, min_conf), b.boxes_at(k + d, min_conf)
+        if not len(ia) or not len(ib):
+            continue
+        D = np.linalg.norm(a.xy[ia][:, None] - b.xy[ib][None], axis=2)
+        S = a.reid[ia] @ b.reid[ib].T
+        r, c = _assignment(D - 0.5 * S)
+        for i, j in zip(r, c):
+            if D[i, j] < max_d and S[i, j] > min_sim and D[i].argmin() == j and D[:, j].argmin() == i:
+                ds.append(float(D[i, j]))
+    return (float(np.mean(ds)) if len(ds) >= 100 else float("nan")), len(ds)
+
+
+def estimate_clock(a: CamBoxes, b: CamBoxes, rate: float, window_s: float = 300.0, max_shift_s: float = 1.5,
+                   step: int = 3, min_conf: float = 0.5, max_d: float = 2.5, min_sim: float = 0.7) -> dict | None:
+    """How far camera b's clock is off camera a's, from the players: per window, b is read d grid frames earlier or
+    later and the d at which the same players coincide best on the pitch is kept (sub-frame by a parabola); a line
+    through those shifts gives an extra offset and drift for b.
+
+    Why: the audio sync is good to ~0.1 s at one moment but cannot see a slow drift through the sound-travel noise.
+    On the 10/8 test the two phones' video clocks drifted 389 ppm (1.2 s over 50 minutes): late in the match the
+    tracker compared players a second apart, which looks like 1 m of position error for a runner.
+    Returns {'shift_s': [(t_mid_s, best_shift_s), ...], 'offset_s', 'drift', 'span_s'} where b's corrected grid is
+    k_b(t) = k_b - (offset_s + drift * t_grid) * rate, or None when fewer than 2 windows have enough pairs."""
+    if a.reid is None or b.reid is None or not a.by_k or not b.by_k:
+        return None
+    n = 1 + max(max(a.by_k), max(b.by_k))
+    W = max(1, int(round(window_s * rate)))
+    D = int(round(max_shift_s * rate))
+    rows = []
+    for lo in range(0, n, W):
+        ks = [k for k in range(lo, min(lo + W, n), step) if k in a.by_k]
+        res = {d: _shift_residual(a, b, ks, d, min_conf, max_d, min_sim)[0] for d in range(-D, D + 1)}
+        ok = {d: r for d, r in res.items() if np.isfinite(r)}
+        if not ok:
+            continue
+        d0 = min(ok, key=ok.get)
+        frac = 0.0
+        if d0 - 1 in ok and d0 + 1 in ok:
+            y0, y1, y2 = ok[d0 - 1], ok[d0], ok[d0 + 1]
+            den = y0 - 2 * y1 + y2
+            frac = float(np.clip(0.5 * (y0 - y2) / den, -0.5, 0.5)) if den > 0 else 0.0
+        rows.append(((lo + min(lo + W, n)) / 2 / rate, (d0 + frac) / rate))
+    if len(rows) < 2:
+        return None
+    t, s = np.array(rows).T
+    drift, off = np.polyfit(t, s, 1)
+    return {"shift_s": [(round(float(x), 1), round(float(y), 3)) for x, y in rows], "offset_s": float(off),
+            "drift": float(drift), "span_s": float(t[-1] - t[0])}
+
+
+def apply_clock(cam: CamBoxes, clock: dict, rate: float) -> None:
+    """Move camera `cam` onto the corrected grid of estimate_clock (in place): k_new = k - shift(t) * rate with
+    shift(t) = offset_s + drift * t, t the grid time. Keeps one source frame per grid frame (grid_frames' rule)."""
+    from .boxes import _index_by_k
+    t_grid = cam.k / rate
+    k_new = np.round(cam.k - (clock["offset_s"] + clock["drift"] * t_grid) * rate).astype(int)
+    # re-impose one source frame per k (a rounding collision pushes the later frame to the next free k)
+    order = np.lexsort((cam.fid, k_new))
+    last, kk = None, {}
+    for i in order:
+        f = int(cam.fid[i])
+        if f in kk:
+            continue
+        k = int(k_new[i])
+        if last is not None and k <= last:
+            k = last + 1
+        kk[f] = last = k
+    cam.k = np.array([kk[int(f)] for f in cam.fid], int)
+    cam.by_k = _index_by_k(cam.k)
+
+
+MIN_CLOCK_SPAN_S = 600.0      # a line through window shifts closer together than this is no better than the audio sync
+
+
+def refine_clock(cams: dict[str, CamBoxes], rate: float, min_span_s: float = MIN_CLOCK_SPAN_S, **kw) -> dict | None:
+    """estimate_clock of the second camera against the first and, when the window shifts span at least min_span_s,
+    apply_clock to the second camera (in place). Each window's best shift is good to a few hundredths of a second,
+    so a drift fitted over two or three windows a few minutes apart is mostly noise; shorter clips keep the audio
+    sync. Returns the estimate plus "camera" (the corrected one) and "applied", or None (not two cameras with ReID,
+    fewer than 2 windows)."""
+    if len(cams) != 2:
+        return None
+    (_, a), (nb, b) = cams.items()
+    c = estimate_clock(a, b, rate, **kw)
+    if c is None:
+        return None
+    c["camera"] = nb
+    c["applied"] = bool(c["span_s"] >= min_span_s)
+    if c["applied"]:
+        apply_clock(b, c, rate)
+    return c
+
+
+def corrected_sync(offset: float, drift: float, clock: dict, start: float = 0.0) -> tuple[float, float]:
+    """The (offset, drift) that reads a camera corrected by apply_clock: its frame for reference time T is at its own
+    t = (T - offset) / (1 + drift) (trackview.render's convention). `offset`, `drift` are its sync before the
+    correction and `start` the reference time of grid frame 0, since the correction is a line in grid time."""
+    c, d = clock["offset_s"], clock["drift"]
+    return offset - c + d * (start - offset), (1 - d) * (1 + drift) - 1

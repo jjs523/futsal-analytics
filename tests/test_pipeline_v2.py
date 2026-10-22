@@ -192,7 +192,7 @@ def test_guess_frame_wh():
 
 def test_v2_long_clip_is_solved_in_chained_windows():
     info: dict = {}
-    ts = build_tracks(COURT, scene(), CALS, SYNC, fps_out=RATE, info=info, window_s=8.0, overlap_s=3.0)
+    ts = build_tracks(COURT, scene(), CALS, SYNC, fps_out=RATE, ids="v2", info=info, window_s=8.0, overlap_s=3.0)
     assert len(info["solver"].windows) == 3 and info["solver"].matched == [len(PLAYERS)] * 2
     assert len(ts.players) == len(PLAYERS)
     T = truth(np.arange(N))

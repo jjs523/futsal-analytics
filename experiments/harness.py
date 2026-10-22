@@ -20,7 +20,9 @@ sys.path.insert(0, os.path.join(ROOT, "src"))
 from futsal.court import Court
 from futsal.homography import timeline_from_json, calibration_at
 
-CACHE = os.path.join(ROOT, "experiments", "cache")
+CACHE = os.environ.get("FUTSAL_CACHE") or os.path.join(ROOT, "experiments", "cache")
+# results of a run on another cache window are saved as <name><FUTSAL_SUFFIX>.json, e.g. final_b2__w2.json
+SUFFIX = os.environ.get("FUTSAL_SUFFIX", "")
 DETECTOR_JITTER_PX = 3.0
 
 
@@ -357,6 +359,6 @@ if __name__ == "__main__":
     tracks = _h.TRACKERS[name](data)
     dt = time.time() - t0
     os.makedirs(os.path.join(ROOT, "experiments", "results"), exist_ok=True)
-    save_tracks(tracks, os.path.join(ROOT, "experiments", "results", f"{name}.json"))
+    save_tracks(tracks, os.path.join(ROOT, "experiments", "results", f"{name}{SUFFIX}.json"))
     m = metrics(tracks, data) | {"runtime_s": round(dt, 1)}
-    print(json.dumps({name: m}, ensure_ascii=False))
+    print(json.dumps({name + SUFFIX: m}, ensure_ascii=False))

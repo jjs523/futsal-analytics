@@ -13,8 +13,13 @@
 검출은 YOLO(사전학습 person)를 씁니다: pip install -e ".[vision]". GPU가 없으면 3분 구간에 수십 분 걸릴 수 있습니다.
 
 추적 방식 (--ids):
-  v2          (기본) 상자 단위 추적: 카메라별 조각 → 두 카메라 짝짓기 → 5대5 정원 배정. 사람 재식별(ReID)
-              특징이 필요합니다 (설치: futsal/pipeline/reid.py 설명). 검출 신뢰도 기본 0.1.
+  v2          (기본) 상자 단위 추적: 카메라별 조각 → 두 카메라 짝짓기 → 팀당 5+1 자리에 배정. 경기 전체에서
+              선수 한 명을 한 ID로 가장 오래 유지합니다 (53분 경기에서 8명이 85~95% 동안 같은 ID). 쉬는 시간처럼
+              코트 위 사람이 바뀌는 구간에서는 자리에 억지로 끼워 넣다가 ID가 바뀌기도 합니다.
+              사람 재식별(ReID) 특징이 필요합니다 (설치: futsal/pipeline/reid.py 설명). 검출 신뢰도 기본 0.1.
+  v2gta       같은 조각을 정원 없이 하나씩 이어 붙이는 방식. 6분 구간에서는 같은 팀 선수끼리 엇갈릴 때 ID가 바뀌는
+              일이 가장 적었지만, 경기 전체에서는 ID가 잘게 나뉩니다 (53분에 88개). 짧은 구간 확인용. ReID 필요.
+  두 방식 모두 10분 이상 구간이면 선수 위치로 두 폰의 시계 어긋남(약 0.4초/1000초)을 먼저 보정합니다.
   appearance  예전 방식 (발 위치 + 색 특징). ReID를 쓸 수 없으면 v2 대신 자동으로 이 방식을 씁니다.
   motion      움직임만 보는 가장 오래된 방식.
 --no-reid 는 ReID 계산을 건너뛰고 예전 방식(appearance)으로 추적합니다.
@@ -33,7 +38,8 @@ import numpy as np
 from .court import Court
 from .homography import Calibration, CalibrationTimeline, calibration_at, timeline_from_json
 from .pipeline import detect
-from .pipeline.run import IDS, build_tracks
+from .pipeline.align import corrected_sync
+from .pipeline.run import IDS, LINKERS, build_tracks
 from .tracks import TrackSet
 
 PANEL_W, PANEL_H = 960, 540
@@ -260,8 +266,8 @@ def run(videos: dict[str, str], cals: dict, offsets: dict[str, tuple[float, floa
         out_dir: str, detector_factory, court: Court, rate_hz: float = 10.0, fps_out: float = 10.0,
         det_tag: str = "", embedder=None, ids: str = "v2") -> dict:
     """Detect (cached per camera), track with build_tracks(ids=...), write tracks.json / events.csv / trackview.mp4.
-    `embedder` (pipeline.reid.reid_embedder) adds a ReID embedding to every box, which ids="v2" needs; without it
-    v2 falls back to "appearance". The detection cache key is `det_tag` plus whether ReID was computed."""
+    `embedder` (pipeline.reid.reid_embedder) adds a ReID embedding to every box, which ids="v2" / "v2gta" need;
+    without it they fall back to "appearance". The detection cache key is `det_tag` plus whether ReID was computed."""
     os.makedirs(out_dir, exist_ok=True)
     tag = det_tag + ("+reid" if embedder is not None else "")
     dets = {}
@@ -284,13 +290,18 @@ def run(videos: dict[str, str], cals: dict, offsets: dict[str, tuple[float, floa
     # reference clock for tracking: 0 = window start on cam1's clock
     sync = {cam: {"offset": offsets.get(cam, (0.0, 0.0))[0] - start, "drift": offsets.get(cam, (0.0, 0.0))[1]} for cam in videos}
     info: dict = {}
-    extra = {"frame_wh": {cam: frame_size(p) for cam, p in videos.items()}} if ids == "v2" else {}
+    extra = {"frame_wh": {cam: frame_size(p) for cam, p in videos.items()}} if ids in LINKERS else {}
     ts = build_tracks(court, dets, cals, sync, fps_out=rate_hz, ids=ids, info=info, **extra)
     if info.get("fallback"):
         print("  ReID 특징이 없어 예전 방식(appearance)으로 추적합니다")
-    if info.get("ids") == "v2":
+    clk = info.get("clock")
+    if clk and clk["applied"]:          # the corrected camera is read on the players' clock, like its boxes
+        offsets = dict(offsets)
+        offsets[clk["camera"]] = corrected_sync(*offsets.get(clk["camera"], (0.0, 0.0)), clk, start)
+        print(f"  {clk['camera']} 시계 보정: {clk['offset_s']:+.3f}초, {clk['drift'] * 1e6:+.0f} ppm")
+    if info.get("ids") in LINKERS:
         al = info.get("alignment")
-        print(f"  추적 v2: 조각 {info['tracklets']}개 → 선수 {info['identities']}명"
+        print(f"  추적 {info['ids']}: 조각 {info['tracklets']}개 → 선수 {info['identities']}명"
               + (f", 두 카메라 위치 차 {al['median_before_m']} → {al['median_after_m']} m" if al else ""))
     n = int(round(duration * rate_hz))
     for p in ts.players:                                   # clip to the window
@@ -324,10 +335,10 @@ def main(argv=None):
     ap.add_argument("--start", type=float, required=True, help="cam1 영상 기준 시작 초")
     ap.add_argument("--duration", type=float, default=180.0)
     ap.add_argument("--court", default="40x20")
-    ap.add_argument("--model", default="yolo11s.pt"); ap.add_argument("--imgsz", type=int, default=1280)
-    ap.add_argument("--conf", type=float, default=None, help="검출 신뢰도 하한 (기본: --ids v2 는 0.1, 그 외 0.3)")
+    ap.add_argument("--model", default="yolo26s.pt"); ap.add_argument("--imgsz", type=int, default=1280)
+    ap.add_argument("--conf", type=float, default=None, help="검출 신뢰도 하한 (기본: --ids v2 / v2gta 는 0.1, 그 외 0.3)")
     ap.add_argument("--rate", type=float, default=10.0, help="초당 검출 횟수")
-    ap.add_argument("--ids", choices=IDS, default="v2", help="추적 방식: v2 (기본, ReID 필요) / appearance (예전 방식) / motion")
+    ap.add_argument("--ids", choices=IDS, default="v2", help="추적 방식: v2 (기본, 팀당 5+1 자리 배정, ReID 필요) / v2gta (정원 없는 연결, ReID 필요) / appearance (예전 방식) / motion")
     ap.add_argument("--no-reid", action="store_true", help="ReID 계산을 건너뛰고 예전 방식(appearance)으로 추적")
     ap.add_argument("--auto-moves", action="store_true", help="카메라가 움직인 순간을 자동으로 찾아 보정 (futsal.camshift)")
     ap.add_argument("--out", default="trackview")
@@ -342,16 +353,16 @@ def main(argv=None):
     videos = dict(zip(names, a.video))
     cals = {n: load_calibration(c, v, a.auto_moves, a.out) for n, c, v in zip(names, a.calib, a.video)}
     offsets = {n: (o, d) for n, o, d in zip(names, offs, drifts)}
-    ids = "appearance" if a.no_reid and a.ids == "v2" else a.ids
+    ids = "appearance" if a.no_reid and a.ids in LINKERS else a.ids
     embedder = None
-    if ids == "v2":
+    if ids in LINKERS:
         from .pipeline.reid import reid_embedder
         try:
             embedder = reid_embedder()
         except ImportError as e:
             print(f"ReID를 쓸 수 없어 예전 방식(appearance)으로 추적합니다: {e}")
             ids = "appearance"
-    conf = a.conf if a.conf is not None else (0.1 if ids == "v2" else 0.3)
+    conf = a.conf if a.conf is not None else (0.1 if ids in LINKERS else 0.3)
     res = run(videos, cals, offsets, a.start, a.duration, a.out,
               lambda cam: detect.yolo_detector(a.model, conf=conf, imgsz=a.imgsz), court, a.rate,
               det_tag=f"{a.model}@{a.imgsz}/{conf}", embedder=embedder, ids=ids)
