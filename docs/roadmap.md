@@ -47,9 +47,9 @@
 
 | 파트 | 맡을 일 | 코드 위치 | 첫 2주 목표 |
 |---|---|---|---|
-| **비전 1: 검출** | YOLO 모델 선택(n/s), 실제 영상 파인튜닝, 폰용 변환(CoreML/TFLite), 팀원 폰 속도 측정, 라벨링 기준 정하기, **공 검출 학습** | `pipeline/detect.py`, `ball/`, `docs/phone-benchmark.md`, [공 검출](ball-detection.md) | 팀원 폰 속도표, 실제 영상에서 먼 선수 놓치는 비율 |
+| **비전 1: 탐지 (Detection)** | 화면에서 선수·공 찾기. YOLO26 모델 선택(n/s), 실제 영상 파인튜닝, 폰용 변환(CoreML/TFLite), 팀원 폰 속도 측정, 라벨링 기준 정하기, **공 검출 학습** | `pipeline/detect.py`, `ball/`, `docs/phone-benchmark.md`, [공 검출](ball-detection.md) | 팀원 폰 속도표, 실제 영상에서 먼 선수 놓치는 비율 |
 | **비전 2: 추적·ID** | 생김새 특징, 조각 끊기·다시 묶기, 키 단서, 팀 자동 분류, 경량 Re-ID 검토, IDF1 평가 | `pipeline/pitch_tracker.py`, `sim/evaluate.py`, [조사 문서](tracking-survey.md) | 실제 영상 3분 라벨링 → 실제 IDF1 측정 |
-| **비전 3: 좌표·동기화·지표** | 기준점 보정, 두 영상 시간 맞추기, 두 카메라 병합, 이동거리·속도, **콘으로 위치 정확도 측정**, 배치 시뮬레이션 | `homography.py`, `sync.py`, `fusion.py`, `metrics.py`, `sim/` | 이번 촬영 영상 시간 맞추기 + 콘 위치 오차표 |
+| **비전 3: 위치 추정·분석 (Localization & Analytics)** | 좌표 변환(Homography): 기준점 보정 → 동기화·병합(Sync & Fusion): 두 영상 시간 맞추기, 두 카메라 병합 → 분석(Analytics): 이동거리·속도·히트맵. **콘으로 위치 정확도 측정**, 배치 시뮬레이션 | `homography.py`, `sync.py`, `fusion.py`, `metrics.py`, `sim/` | 이번 촬영 영상 시간 맞추기 + 콘 위치 오차표 |
 | **백엔드 1: 폰 처리 엔진** | 녹화 파일 프레임 읽기 → 모델 실행 → `det.json` 저장, 백그라운드·충전 중 처리, 발열·속도 최적화, 분석 코어(보정·병합·추적·지표) Dart 이식 | (새로) `app/` 엔진 부분 | 폰에서 `det.json` 생성 → PC 결과와 같은지 비교 |
 | **백엔드 2: 데이터·연결** | QR 짝짓기, 두 폰 시계 차 측정, 폰끼리 결과 전송, 경기·구장·보정값 로컬 저장, 결과 내보내기(이미지·파일), (선택) 무료 클라우드 공유, 개발용 PC 도구·테스트 유지 | (새로) `app/` 데이터 부분, `server/`, `tests/` | 두 폰 짝짓기 → 시계 차 측정 → 테스트 파일 전송 |
 
