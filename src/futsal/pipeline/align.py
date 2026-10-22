@@ -141,9 +141,10 @@ def estimate_clock(a: CamBoxes, b: CamBoxes, rate: float, window_s: float = 300.
     later and the d at which the same players coincide best on the pitch is kept (sub-frame by a parabola); a line
     through those shifts gives an extra offset and drift for b.
 
-    Why: the audio sync is good to ~0.1 s at one moment but cannot see a slow drift through the sound-travel noise.
-    On the 10/8 test the two phones' video clocks drifted 389 ppm (1.2 s over 50 minutes): late in the match the
-    tracker compared players a second apart, which looks like 1 m of position error for a runner.
+    Why: the audio sync is good to ~0.1 s at one moment but cannot see a slow drift through the sound-travel noise,
+    and comparing players a second apart looks like 1 m of position error for a runner. On the 10/8 test this
+    measured -389 ppm (1.2 s over 50 minutes); that turned out to be grid_frames' old push-forward rule on the 60 fps
+    phone (boxes.one_source_frame_per_k), not the phones.
     Returns {'shift_s': [(t_mid_s, best_shift_s), ...], 'offset_s', 'drift', 'span_s'} where b's corrected grid is
     k_b(t) = k_b - (offset_s + drift * t_grid) * rate, or None when fewer than 2 windows have enough pairs."""
     if a.reid is None or b.reid is None or not a.by_k or not b.by_k:
@@ -175,22 +176,14 @@ def estimate_clock(a: CamBoxes, b: CamBoxes, rate: float, window_s: float = 300.
 
 def apply_clock(cam: CamBoxes, clock: dict, rate: float) -> None:
     """Move camera `cam` onto the corrected grid of estimate_clock (in place): k_new = k - shift(t) * rate with
-    shift(t) = offset_s + drift * t, t the grid time. Keeps one source frame per grid frame (grid_frames' rule)."""
-    from .boxes import _index_by_k
-    t_grid = cam.k / rate
-    k_new = np.round(cam.k - (clock["offset_s"] + clock["drift"] * t_grid) * rate).astype(int)
-    # re-impose one source frame per k (a rounding collision pushes the later frame to the next free k)
-    order = np.lexsort((cam.fid, k_new))
-    last, kk = None, {}
-    for i in order:
-        f = int(cam.fid[i])
-        if f in kk:
-            continue
-        k = int(k_new[i])
-        if last is not None and k <= last:
-            k = last + 1
-        kk[f] = last = k
-    cam.k = np.array([kk[int(f)] for f in cam.fid], int)
+    shift(t) = offset_s + drift * t, t the grid time. At most one source frame per grid frame, as in grid_frames:
+    with drift > 0 the corrected grid is compressed and the surplus frames are left off it (k = -1)."""
+    from .boxes import _index_by_k, one_source_frame_per_k
+    on = cam.k >= 0
+    k0 = {int(f): int(k) for f, k in zip(cam.fid[on], cam.k[on])}
+    keys = list(k0)
+    k_of = one_source_frame_per_k(keys, [k0[f] - (clock["offset_s"] + clock["drift"] * k0[f] / rate) * rate for f in keys])
+    cam.k = np.array([k_of[int(f)] if o else -1 for f, o in zip(cam.fid, on)], int)
     cam.by_k = _index_by_k(cam.k)
 
 

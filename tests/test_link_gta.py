@@ -398,7 +398,7 @@ def test_trackview_accepts_v2gta(tmp_path, monkeypatch):
                     or not os.path.exists(os.path.join(ROOT, "experiments", "results", "final_b2.json"))
                     or not sources.have_boxmot(),
                     reason="set FUTSAL_RESEARCH_PARITY=1 (needs experiments/cache, results/final_b2.json, boxmot)")
-def test_link_tracklets_reproduces_research_final_b2():
+def test_link_tracklets_reproduces_research_final_b2(monkeypatch):
     """cache -> CamBoxes -> align_cameras -> relink_source (BoostTrack proposals) -> link_tracklets (strict debris,
     cam2 top exemption) gives experiments/results/final_b2.json: same boxes per identity in the same order, same
     frames, positions within the file's 3-decimal rounding. Teams from the research yellow-bib rule (Y -> A,
@@ -408,8 +408,9 @@ def test_link_tracklets_reproduces_research_final_b2():
     from harness import Data, load_tracks
     from futsal.pipeline.align import align_cameras
     from futsal.pipeline.boxes import cams_from_cache
+    monkeypatch.setenv("FUTSAL_LEGACY_GRID", "1")              # the stored result was made with the old grid rule
     data = Data()
-    cams, meta = cams_from_cache(CACHE, ROOT)
+    cams, meta = cams_from_cache(CACHE, ROOT, legacy_grid=True)
     align_cameras(cams, COURT, k_range=(0, data.n))
     for name, cam in cams.items():
         cam.team = np.array([{"Y": "A", "N": "B"}.get(x, "") for x in data.cams[name].team], dtype="<U1")

@@ -218,3 +218,18 @@ def test_parity_with_the_research_harness():
     one = cam_boxes_from_cache(os.path.join(CACHE, "cam2.npz"), "cam2", cams["cam2"].cal, meta["offsets"]["cam2"],
                                meta["start"], meta["rate"], COURT)
     assert np.array_equal(one.xy, cams["cam2"].xy_raw)
+
+
+def test_grid_frames_follow_the_camera_clock_when_it_samples_a_little_fast():
+    """A camera sampled every 0.0999556 s (the 10/8 S26: 60 fps, every 6th frame) has a surplus frame every ~2250
+    samples. Pushing it to the next grid frame made every later frame follow (the grid ran 444 ppm ahead of the
+    camera clock, 1.3 s after 50 minutes); the surplus frame is now left off the grid instead."""
+    n = 30000
+    t = 7.0 + np.arange(n) * 0.0999556
+    fid = np.arange(n)
+    k = grid_frames(fid, t, offset_s=0.0, drift=0.0, start_s=7.0, rate=10.0)
+    on = k >= 0
+    assert 10 <= (~on).sum() <= 16 and len(set(k[on])) == on.sum()
+    assert np.abs(k[on] / 10.0 - (t[on] - 7.0)).max() <= 0.05 + 1e-9               # within half a grid frame
+    old = grid_frames(fid, t, offset_s=0.0, drift=0.0, start_s=7.0, rate=10.0, legacy=True)
+    assert (old >= 0).all() and old[-1] / 10.0 - (t[-1] - 7.0) > 1.0                # the cascade it replaces

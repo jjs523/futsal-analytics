@@ -134,9 +134,9 @@ def track_cams(cams: dict, court: Court, rate: float = 10.0, closed_params=None,
     linker="gta" (ids "v2gta"): sources.relink_source(**source_params, e.g. proposals=None) ->
     link_gta.link_tracklets_windowed(gta_params). Both linkers skip their own smoothing by default: the RTS
     refinement replaces those positions (closed: also no re-fusion; gta: GtaParams(smooth='none')).
-    clock_refine: first move the second camera onto the first one's clock with the players (align.refine_clock:
-    the phones' video clocks drift ~0.4 s per 1000 s, which the audio sync cannot see; clips shorter than ~10
-    minutes are left as they are).
+    clock_refine: first move the second camera onto the first one's clock with the players (align.refine_clock: a
+    slow drift between the phones' video clocks, which the audio sync cannot see; clips shorter than ~10 minutes are
+    left as they are).
     `info` receives "clock", "teams", "alignment", "tracklets", "solver" and "identities" (see build_tracks_v2),
     plus "source" (sources.SourceStats) for the open set."""
     from .align import align_cameras, refine_clock
@@ -167,7 +167,7 @@ def track_cams(cams: dict, court: Court, rate: float = 10.0, closed_params=None,
         info["source"] = sst
         info["tracklets"] = len(tracklets)
         # identities shorter than min_len_s are dropped: never ask for more than a quarter of the clip
-        ks = [k for c in cams.values() for k in (min(c.by_k), max(c.by_k)) if c.by_k]
+        ks = [k for c in cams.values() if c.by_k for k in (min(c.by_k), max(c.by_k))]
         span_s = (1 + max(ks) - min(ks)) / rate if ks else 0.0
         params = gta_params or replace(GtaParams(), smooth="none", min_len_s=min(GtaParams().min_len_s, span_s / 4))
         ids = link_tracklets_windowed(tracklets, cams, rate, params, window_s=window_s, overlap_s=overlap_s,

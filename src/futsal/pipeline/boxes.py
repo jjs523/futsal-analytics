@@ -42,7 +42,7 @@ class CamBoxes:
     name: str
     fid: np.ndarray               # (n,) int   source frame index (as stored by the detector)
     t: np.ndarray                 # (n,) camera clock, s
-    k: np.ndarray                 # (n,) int   grid frame on the reference clock
+    k: np.ndarray                 # (n,) int   grid frame on the reference clock (-1: surplus source frame, off the grid)
     xyxy: np.ndarray              # (n, 4) pixels (calibrated resolution)
     conf: np.ndarray              # (n,)
     reid: np.ndarray | None       # (n, d) float32, L2-normalised (to the float16 precision it is stored with)
@@ -73,18 +73,33 @@ class CamBoxes:
         return idx[m]
 
 
-def grid_frames(fid: np.ndarray, t: np.ndarray, offset_s: float, drift: float, start_s: float, rate: float) -> np.ndarray:
-    """Grid frame k of every box: one grid frame per source frame.
+def one_source_frame_per_k(keys: list, x: list[float], legacy: bool = False) -> dict:
+    """Grid frame of each source frame (`keys`) at grid position `x` (float, in grid frames): round(x), at most one
+    source frame per grid frame. When two consecutive source frames round onto one k, the later one moves to the next
+    k if that is still within half a grid frame of it (a tie: 60 fps sampled every 6th frame lands exactly between
+    two grid frames at x.x5 s) and is dropped (k = -1) otherwise: the camera simply has more frames than the grid.
 
-    Source times that land exactly between two grid frames (60 fps at x.x5 s) can round two consecutive source
-    frames onto the same k; the later one is pushed to the next free k, so a k never mixes two source frames."""
-    k_of: dict[tuple[int, float], int] = {}
-    last = None
-    for f, tt in sorted({(int(f), float(tt)) for f, tt in zip(fid, t)}, key=lambda ft: (ft[1], ft[0])):
-        kk = int(np.round((tt + offset_s + drift * tt - start_s) * rate))
+    Pushing it on regardless (legacy=True, the rule until 2026-10-22 and in the research results) made every later
+    frame follow it for good: the 10/8 S26 sampled every 0.0999556 s, so its grid ran ahead of its own clock by
+    444 ppm, 1.3 s at the end of the match, which looked like the two phones' clocks drifting apart."""
+    k_of, last = {}, None
+    for key, xx in sorted(zip(keys, x), key=lambda kx: (kx[1], kx[0])):
+        kk = int(np.round(xx))
         if last is not None and kk <= last:
+            if not legacy and last + 1 - xx > 0.5 + 1e-6:
+                k_of[key] = -1
+                continue
             kk = last + 1
-        k_of[(f, tt)] = last = kk
+        k_of[key] = last = kk
+    return k_of
+
+
+def grid_frames(fid: np.ndarray, t: np.ndarray, offset_s: float, drift: float, start_s: float, rate: float,
+                legacy: bool = False) -> np.ndarray:
+    """Grid frame k = round((t + offset + drift * t - start) * rate) of every box, at most one source frame per grid
+    frame (one_source_frame_per_k: a tie moves to the next k, a surplus frame gets k = -1 and is left off the grid)."""
+    frames = sorted({(int(f), float(tt)) for f, tt in zip(fid, t)})
+    k_of = one_source_frame_per_k(frames, [(tt + offset_s + drift * tt - start_s) * rate for _, tt in frames], legacy)
     return np.array([k_of[(int(f), float(tt))] for f, tt in zip(fid, t)], int).reshape(-1)
 
 
@@ -107,14 +122,17 @@ def _pitch(cal: Calibration | CalibrationTimeline, t: np.ndarray, foot: np.ndarr
 
 
 def _index_by_k(k: np.ndarray) -> dict[int, np.ndarray]:
+    """Box indices per grid frame; boxes off the grid (k < 0) are left out."""
     out: dict[int, list[int]] = {}
     for i in np.argsort(k, kind="stable"):
+        if k[i] < 0:
+            continue
         out.setdefault(int(k[i]), []).append(int(i))
     return {kk: np.array(v, int) for kk, v in out.items()}
 
 
 def _cam_boxes(name: str, fid, t, xyxy, conf, reid, color, cal, offset_s: float, drift: float, start_s: float,
-               rate: float, court: Court, frame_wh=(1920, 1080), foot=None) -> CamBoxes:
+               rate: float, court: Court, frame_wh=(1920, 1080), foot=None, legacy_grid: bool = False) -> CamBoxes:
     fid = np.asarray(fid).astype(int).reshape(-1)
     t = np.asarray(t, float).reshape(-1)
     xyxy = np.asarray(xyxy, float).reshape(-1, 4)
@@ -122,7 +140,7 @@ def _cam_boxes(name: str, fid, t, xyxy, conf, reid, color, cal, offset_s: float,
     if foot is None:
         foot = np.stack([(xyxy[:, 0] + xyxy[:, 2]) / 2, xyxy[:, 3]], 1)
     xy, sigma = _pitch(cal, t, foot)
-    k = grid_frames(fid, t, offset_s, drift, start_s, rate)
+    k = grid_frames(fid, t, offset_s, drift, start_s, rate, legacy_grid)
     return CamBoxes(name=name, fid=fid, t=t, k=k, xyxy=xyxy, conf=conf, reid=reid, color=color, foot=foot,
                     h=xyxy[:, 3] - xyxy[:, 1], w=xyxy[:, 2] - xyxy[:, 0], xy=xy, xy_raw=xy.copy(), sigma=sigma,
                     in_court=court.contains(xy, COURT_MARGIN_M) if len(xy) else np.zeros(0, bool),
@@ -166,18 +184,22 @@ def build_cam_boxes(name: str, dets: list[Detection], cal: Calibration | Calibra
 
 
 def cam_boxes_from_cache(npz_path: str, name: str, cal: Calibration | CalibrationTimeline, offset: float, start: float,
-                         rate: float, court: Court, drift: float = 0.0, frame_wh=(1920, 1080)) -> CamBoxes:
+                         rate: float, court: Court, drift: float = 0.0, frame_wh=(1920, 1080),
+                         legacy_grid: bool = False) -> CamBoxes:
     """CamBoxes from a research detection cache (experiments/build_cache.py: fid, t, xyxy, conf, reid float16,
-    color uint8), without the video. ReID is used as stored, like the research harness."""
+    color uint8), without the video. ReID is used as stored, like the research harness. Box i is the cache's box i
+    (boxes of a surplus source frame keep their index with k = -1). legacy_grid: grid_frames' old rule, which the
+    results in experiments/results were made with."""
     z = np.load(npz_path)
     n = len(z["t"])
     reid = z["reid"].astype(np.float32).reshape(n, -1) if "reid" in z and z["reid"].size else None
     color = z["color"].astype(float).reshape(n, -1) / 255.0 if "color" in z and z["color"].size else None
     return _cam_boxes(name, z["fid"], z["t"], z["xyxy"], z["conf"], reid, color, cal, offset, drift, start, rate, court,
-                      frame_wh)
+                      frame_wh, legacy_grid=legacy_grid)
 
 
-def cams_from_cache(cache_dir: str, root: str = ".", court: Court | None = None) -> tuple[dict[str, CamBoxes], dict]:
+def cams_from_cache(cache_dir: str, root: str = ".", court: Court | None = None,
+                    legacy_grid: bool = False) -> tuple[dict[str, CamBoxes], dict]:
     """All cameras of a research cache directory (meta.json + <cam>.npz); calibration paths in meta.json are
     relative to `root` (the repository). Returns (cams, meta); no alignment, no teams."""
     with open(os.path.join(cache_dir, "meta.json"), encoding="utf-8") as f:
@@ -188,7 +210,7 @@ def cams_from_cache(cache_dir: str, root: str = ".", court: Court | None = None)
         with open(os.path.join(root, meta["calib"][cam]), encoding="utf-8") as f:
             cal = timeline_from_json(json.load(f))
         cams[cam] = cam_boxes_from_cache(os.path.join(cache_dir, f"{cam}.npz"), cam, cal, float(meta["offsets"][cam]),
-                                         float(meta["start"]), float(meta["rate"]), court)
+                                         float(meta["start"]), float(meta["rate"]), court, legacy_grid=legacy_grid)
     return cams, meta
 
 

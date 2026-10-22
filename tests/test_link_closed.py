@@ -294,7 +294,7 @@ def test_rts_smooth_edge_cases():
                     or not os.path.exists(os.path.join(CACHE, "meta.json"))
                     or not os.path.exists(os.path.join(ROOT, "experiments", "results", "final_d.json")),
                     reason="set FUTSAL_RESEARCH_PARITY=1 (needs experiments/cache and results/final_d.json)")
-def test_assign_identities_reproduces_research_final_d():
+def test_assign_identities_reproduces_research_final_d(monkeypatch):
     """cache -> CamBoxes -> align_cameras -> build_tracklets -> assign_identities (cam2 top exemption) gives
     experiments/results/final_d.json: same boxes per identity, positions within the file's 3-decimal rounding.
     Teams from the research yellow-bib rule (Y -> A, N -> B), as in the build_tracklets parity test."""
@@ -303,8 +303,9 @@ def test_assign_identities_reproduces_research_final_d():
     from futsal.pipeline.align import align_cameras
     from futsal.pipeline.boxes import cams_from_cache
     from futsal.pipeline.tracklets import build_tracklets
+    monkeypatch.setenv("FUTSAL_LEGACY_GRID", "1")              # the stored result was made with the old grid rule
     data = Data()
-    cams, meta = cams_from_cache(CACHE, ROOT)
+    cams, meta = cams_from_cache(CACHE, ROOT, legacy_grid=True)
     align_cameras(cams, COURT, k_range=(0, data.n))
     for name, cam in cams.items():
         cam.team = np.array([{"Y": "A", "N": "B"}.get(x, "") for x in data.cams[name].team], dtype="<U1")

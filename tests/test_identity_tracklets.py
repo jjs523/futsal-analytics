@@ -193,13 +193,14 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 @pytest.mark.skipif(os.environ.get("FUTSAL_RESEARCH_PARITY") != "1"
                     or not os.path.exists(os.path.join(ROOT, "experiments", "cache", "meta.json")),
                     reason="set FUTSAL_RESEARCH_PARITY=1 (needs experiments/cache)")
-def test_build_tracklets_matches_research_xview():
+def test_build_tracklets_matches_research_xview(monkeypatch):
     import copy
     import sys
     sys.path.insert(0, os.path.join(ROOT, "experiments"))
     import xview
     from harness import Data
-    data = Data()
+    monkeypatch.setenv("FUTSAL_LEGACY_GRID", "1")      # research per-camera code also walks off-grid boxes: compare
+    data = Data()                                      # the port on the grid every box is on (the old rule)
     cams = {}
     for name, c in data.cams.items():             # research team labels Y / N -> A / B
         a = copy.copy(c)

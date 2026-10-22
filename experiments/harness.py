@@ -19,6 +19,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "src"))
 from futsal.court import Court
 from futsal.homography import timeline_from_json, calibration_at
+from futsal.pipeline.boxes import one_source_frame_per_k
 
 CACHE = os.environ.get("FUTSAL_CACHE") or os.path.join(ROOT, "experiments", "cache")
 # results of a run on another cache window are saved as <name><FUTSAL_SUFFIX>.json, e.g. final_b2__w2.json
@@ -55,16 +56,11 @@ class CamData:
         c = calibration_at(cal, float(np.median(self.t))) if len(self.t) else cal
         self.xy = c.to_pitch(foot) if len(foot) else np.zeros((0, 2))
         self.sigma = DETECTOR_JITTER_PX * c.metres_per_pixel(foot) if len(foot) else np.zeros(0)
-        # common grid on cam1's clock: k = round((t_cam + offset - start) * rate)
-        # one grid frame per source frame: times that land exactly between two grid frames (60 fps at x.x5 s) can
-        # round two consecutive source frames onto the same k; push the later one to the next free k
-        k_of = {}
-        last = None
-        for f, tt in sorted({(int(f), float(tt)) for f, tt in zip(self.fid, self.t)}):
-            kk = int(np.round((tt + offset - start) * rate))
-            if last is not None and kk <= last:
-                kk = last + 1
-            k_of[f] = last = kk
+        # common grid on cam1's clock: k = round((t_cam + offset - start) * rate), at most one source frame per k
+        # (src boxes.one_source_frame_per_k; FUTSAL_LEGACY_GRID=1: the old push-forward rule of experiments/results)
+        frames = sorted({(int(f), float(tt)) for f, tt in zip(self.fid, self.t)})
+        k_of = one_source_frame_per_k([f for f, _ in frames], [(tt + offset - start) * rate for _, tt in frames],
+                                      legacy=bool(os.environ.get("FUTSAL_LEGACY_GRID")))
         self.k = np.array([k_of[int(f)] for f in self.fid], int)
         self.in_court = court.contains(self.xy, 1.0) if len(self.xy) else np.zeros(0, bool)
         # team from the bib: one team wears yellow bibs (upper-body hue bins 1-2 = OpenCV hue 15-45), the other none.
@@ -75,7 +71,8 @@ class CamData:
         self.team = np.where(self.h < 30, "", np.where(yel >= 0.15, "Y", np.where(yel < 0.05, "N", "")))
         self.by_k: dict[int, np.ndarray] = {}
         for i in np.argsort(self.k, kind="stable"):
-            self.by_k.setdefault(int(self.k[i]), []).append(int(i))
+            if self.k[i] >= 0:
+                self.by_k.setdefault(int(self.k[i]), []).append(int(i))
         self.by_k = {k: np.array(v) for k, v in self.by_k.items()}
         # sample index -> frame time, for re-reading pixels
         self.k_of_fid = {}

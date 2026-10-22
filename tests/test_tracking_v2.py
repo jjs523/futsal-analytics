@@ -373,7 +373,7 @@ def test_fill_gaps_is_exact_on_constant_velocity():
 @pytest.mark.skipif(not os.path.exists(os.path.join(CACHE, "meta.json"))
                     or not os.path.exists(os.path.join(ROOT, "experiments", "xview.py")),
                     reason="needs experiments/cache and the research code")
-def test_build_tracklets_partition_matches_research_xview():
+def test_build_tracklets_partition_matches_research_xview(monkeypatch):
     """src path (cache -> CamBoxes -> align_cameras -> build_tracklets) gives the research xview partition box for box.
     Teams come from the research yellow-bib rule (Y -> A, N -> B): assign_teams is checked against that rule in
     test_boxes, and a handful of its different labels move the pair_views team gate."""
@@ -381,8 +381,9 @@ def test_build_tracklets_partition_matches_research_xview():
     sys.path.insert(0, os.path.join(ROOT, "experiments"))
     import xview
     from harness import Data
-    data = Data()
-    cams, meta = cams_from_cache(CACHE, ROOT)
+    monkeypatch.setenv("FUTSAL_LEGACY_GRID", "1")      # research per-camera code also walks off-grid boxes: compare
+    data = Data()                                      # the port on the grid every box is on (the old rule)
+    cams, meta = cams_from_cache(CACHE, ROOT, legacy_grid=True)
     al = align_cameras(cams, COURT, k_range=(0, data.n))
     assert al is not None and al["pairs"] == data.alignment["pairs"]
     for name, cam in cams.items():

@@ -1,5 +1,6 @@
 """align.estimate_clock / apply_clock: recover a known clock offset + drift between two cameras from the players."""
 import numpy as np
+import pytest
 
 from futsal.court import Court
 from futsal.homography import Calibration
@@ -34,12 +35,14 @@ def camera(name: str, n: int, players: int, emb: np.ndarray, shift=lambda t: 0.0
                     cal=Calibration(np.eye(3), 0.0), frame_wh=(1920, 1080), by_k=_index_by_k(ks))
 
 
-def test_estimate_and_apply_clock_recovers_offset_and_drift():
+@pytest.mark.parametrize("off,drift", [(-0.12, -400e-6), (0.12, 400e-6)])
+def test_estimate_and_apply_clock_recovers_offset_and_drift(off, drift):
+    """Either sign: a negative drift stretches camera 2's grid, a positive one compresses it (surplus frames are left
+    off the grid; pushing them on would cancel the drift)."""
     rng = np.random.default_rng(0)
     players, n = 8, 9000                                    # 15 minutes at 10 Hz
     emb = rng.normal(size=(players, 16))
     emb /= np.linalg.norm(emb, axis=1, keepdims=True)
-    off, drift = -0.12, -400e-6                             # camera 2 reads 0.12 s early, falling 0.4 s behind per 1000 s
     a = camera("cam1", n, players, emb)
     b = camera("cam2", n, players, emb, shift=lambda t: -(off + drift * t))
     clock = align.estimate_clock(a, b, RATE, window_s=180.0, max_shift_s=1.0, step=10)
@@ -49,7 +52,9 @@ def test_estimate_and_apply_clock_recovers_offset_and_drift():
     align.apply_clock(b, clock, RATE)
     after = align._shift_residual(a, b, list(range(0, n, 10)), 0, 0.5, 2.5, 0.7)[0]
     assert after < 0.25 * before
-    assert len(set(zip(b.k.tolist(), b.fid.tolist()))) == len(set(b.fid.tolist()))   # one grid frame per source frame
+    on = b.k >= 0
+    assert len(set(b.k[on].tolist())) == len(set(b.fid[on].tolist()))                 # one source frame per grid frame
+    assert (~on).sum() <= (5 * players if drift > 0 else 0)
     again = align.estimate_clock(a, b, RATE, window_s=180.0, max_shift_s=1.0, step=10)
     assert abs(again["offset_s"]) < 0.03 and abs(again["drift"]) < 60e-6
 
@@ -80,7 +85,8 @@ def test_refine_clock_applies_only_over_a_long_enough_span():
     assert align.refine_clock({"cam1": a}, RATE) is None
 
 
-def test_corrected_sync_reads_the_corrected_camera_at_its_own_frames():
+@pytest.mark.parametrize("drift_c", [-400e-6, 400e-6])
+def test_corrected_sync_reads_the_corrected_camera_at_its_own_frames(drift_c):
     """A camera synced with (offset, drift) on a grid starting at `start`, then corrected: corrected_sync gives the
     (offset, drift) at which trackview.render finds, for each grid frame, the camera frame whose boxes are there."""
     emb = np.ones((1, 4)) / 2.0
@@ -89,9 +95,10 @@ def test_corrected_sync_reads_the_corrected_camera_at_its_own_frames():
     t = np.arange(30000) / RATE + 5.0                                    # the camera's own clock (s)
     cam.t, cam.fid = t, np.arange(30000)
     cam.k = np.round((t + off + drift * t - start) * RATE).astype(int)
-    clock = {"offset_s": -0.12, "drift": -400e-6}
+    clock = {"offset_s": -0.12, "drift": drift_c}
     align.apply_clock(cam, clock, RATE)
     o2, d2 = align.corrected_sync(off, drift, clock, start)
-    t_hat = (start + cam.k / RATE - o2) / (1 + d2)
-    assert np.max(np.abs(t_hat - cam.t)) <= 1.0 / RATE + 1e-9
+    on = cam.k >= 0
+    t_hat = (start + cam.k[on] / RATE - o2) / (1 + d2)
+    assert np.max(np.abs(t_hat - cam.t[on])) <= 1.0 / RATE + 1e-9          # two roundings of half a frame each
     assert np.allclose(align.corrected_sync(off, drift, {"offset_s": 0.0, "drift": 0.0}, start), (off, drift), rtol=0, atol=1e-12)
