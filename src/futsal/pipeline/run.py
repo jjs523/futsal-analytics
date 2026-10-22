@@ -19,10 +19,10 @@ the 10/8 test match. Window 1 (9:00-15:00, where both were tuned): open set 0.97
 set 0.97-0.98 / 7 in 36. Window 2 (25:00-31:00, held out: a break with bibs changing hands, players sitting and
 walking off): open set 0.90 / 35 %, closed set 0.83 / 55 %, because the closed set forces whoever is there into the
 five slots. The open set's price is more ids than players (goalkeepers, substitutes, off-court people get their own),
-and over a whole match it does not hold people together: on the 53-minute test (YOLO26x boxes, clock refined) it gave
-88 identities, none seen in more than 66 % of the match, where the closed set kept 8 players at 85-95 %. Per-player
-match statistics are the product, so the closed set is the default; v2gta is for short clips where a wrong id costs
-more than a split one.
+and over a whole match it does not hold people together: on the 53-minute test (YOLO26x boxes) it gave 86
+identities, none seen in more than 76 % of the match, where the closed set gave 32 with 5 players above 80 % (YOLO11x
+boxes: 25 and 6). Per-player match statistics are the product, so the closed set is the default; v2gta is for short
+clips where a wrong id costs more than a split one.
 
 ids="appearance" / "motion": the older foot-point fusion trackers (pitch_tracker), used whenever ReID is missing.
 """
