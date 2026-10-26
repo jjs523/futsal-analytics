@@ -60,6 +60,10 @@ ByteTrack, OC-SORT, BoT-SORT, DeepOCSORT, BoostTrack, HybridSort를 카메라별
 
 v2와 v2gta는 YOLO26x 박스입니다. 영상: `experiments/full_match26/trackview_h264.mp4` (위 두 카메라 + 아래 2D 지도).
 
+![53분 동안 ID가 이어진 구간: 왼쪽 v2, 오른쪽 v2gta](img/id_timeline.png)
+
+한 줄이 ID 하나(처음 나온 순서), 막대가 그 ID가 보인 구간입니다. 26분 전후로 모든 막대가 비는 곳이 쉬는 시간입니다. 그림 다시 만들기: `python experiments/plot_id_timeline.py experiments/full_match26 experiments/full_match26_gta --out docs/img/id_timeline.png`
+
 **기본값을 v2로 둔 이유:** 우리 결과물은 선수별 경기 전체 기록(이동거리·속도·히트맵)입니다. v2gta는 짧은 구간에서 ID가 덜 바뀌지만, 경기 전체에서는 한 선수가 여러 ID로 나뉩니다. 짧은 구간을 확인할 때는 `--ids v2gta`가 낫습니다.
 
 ## 3. 알게 된 것
